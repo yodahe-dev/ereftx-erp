@@ -8,6 +8,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { motion } from "framer-motion";
 import { Trash2, Pencil } from "lucide-react";
 
+/**
+ * =====================
+ * TYPES
+ * =====================
+ */
 interface Packaging {
   id: string;
   type: string;
@@ -15,6 +20,19 @@ interface Packaging {
   updatedAt?: string;
 }
 
+interface ApiError {
+  response?: {
+    data?: {
+      message?: string;
+    };
+  };
+}
+
+/**
+ * =====================
+ * COMPONENT
+ * =====================
+ */
 export default function PackagingPage(): JSX.Element {
   const [items, setItems] = useState<Packaging[]>([]);
   const [name, setName] = useState<string>("");
@@ -23,54 +41,99 @@ export default function PackagingPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState<string>("");
 
+  /**
+   * =====================
+   * FETCH
+   * =====================
+   */
   const fetchPackagings = async (): Promise<void> => {
     try {
       setError(null);
+
       const res = await api.get<Packaging[]>("/packagings");
+
+      if (!Array.isArray(res.data)) {
+        throw new Error("Invalid API response");
+      }
+
       setItems(res.data);
-    } catch (e) {
-      setError("Failed to load packagings");
+    } catch (e: unknown) {
+      const err = e as ApiError;
+
+      setError(
+        err?.response?.data?.message || "Failed to load packagings"
+      );
     }
   };
 
   useEffect(() => {
-    fetchPackagings();
+    void fetchPackagings();
   }, []);
 
-  const filteredItems = useMemo(() => {
-    return items.filter((p) =>
-      p.type.toLowerCase().includes(search.toLowerCase())
-    );
+  /**
+   * =====================
+   * FILTER
+   * =====================
+   */
+  const filteredItems = useMemo<Packaging[]>(() => {
+    const q = search.toLowerCase();
+
+    return items.filter((p) => p.type.toLowerCase().includes(q));
   }, [items, search]);
 
+  /**
+   * =====================
+   * RESET
+   * =====================
+   */
   const resetForm = (): void => {
     setName("");
     setEditingId(null);
   };
 
+  /**
+   * =====================
+   * SUBMIT
+   * =====================
+   */
   const handleSubmit = async (): Promise<void> => {
-    if (!name.trim()) return;
+    const trimmed = name.trim();
+
+    if (!trimmed) {
+      setError("Type is required");
+      return;
+    }
 
     try {
       setLoading(true);
       setError(null);
 
+      const payload: { type: string } = {
+        type: trimmed,
+      };
+
       if (editingId) {
-        await api.put(`/packagings/${editingId}`, { type: name });
+        await api.put(`/packagings/${editingId}`, payload);
       } else {
-        await api.post("/packagings", { type: name });
+        await api.post("/packagings", payload);
       }
 
       resetForm();
       await fetchPackagings();
-    } catch (e: any) {
-      console.error(e);
-      setError(e?.response?.data?.message || "Failed to save packaging");
+    } catch (e: unknown) {
+      const err = e as ApiError;
+
+      setError(err?.response?.data?.message || "Failed to save packaging");
     } finally {
       setLoading(false);
     }
   };
 
+  /**
+   * =====================
+   * DELETE
+   * =====================
+   */
   const handleDelete = async (id: string): Promise<void> => {
     if (!confirm("Delete this packaging?")) return;
 
@@ -78,16 +141,26 @@ export default function PackagingPage(): JSX.Element {
       setError(null);
       await api.delete(`/packagings/${id}`);
       await fetchPackagings();
-    } catch (e) {
+    } catch (e: unknown) {
       setError("Failed to delete packaging");
     }
   };
 
+  /**
+   * =====================
+   * EDIT
+   * =====================
+   */
   const handleEdit = (item: Packaging): void => {
     setName(item.type);
     setEditingId(item.id);
   };
 
+  /**
+   * =====================
+   * UI
+   * =====================
+   */
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       <h1 className="text-3xl font-semibold">Packagings</h1>
@@ -135,6 +208,7 @@ export default function PackagingPage(): JSX.Element {
             <Card className="flex justify-between items-center p-4">
               <div className="flex flex-col">
                 <span className="font-medium">{item.type}</span>
+
                 {item.createdAt && (
                   <span className="text-xs text-muted-foreground">
                     {new Date(item.createdAt).toLocaleDateString()}

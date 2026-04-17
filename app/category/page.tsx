@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { JSX, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,75 +8,153 @@ import { Card, CardContent } from "@/components/ui/card";
 import { motion } from "framer-motion";
 import { Trash2, Pencil } from "lucide-react";
 
+/**
+ * =====================
+ * TYPES
+ * =====================
+ */
 interface Category {
   id: string;
   name: string;
 }
 
-export default function CategoryPage() {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [name, setName] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+interface ApiError {
+  response?: {
+    data?: {
+      message?: string;
+    };
+  };
+}
 
-  // fetch
-  const fetchCategories = async () => {
+/**
+ * =====================
+ * COMPONENT
+ * =====================
+ */
+export default function CategoryPage(): JSX.Element {
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [name, setName] = useState<string>("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  /**
+   * =====================
+   * FETCH
+   * =====================
+   */
+  const fetchCategories = async (): Promise<void> => {
     try {
+      setError(null);
+
       const res = await api.get<Category[]>("/categories");
+
+      if (!Array.isArray(res.data)) {
+        throw new Error("Invalid API response");
+      }
+
       setCategories(res.data);
-    } catch (err) {
-      console.error(err);
+    } catch (e: unknown) {
+      const err = e as ApiError;
+
+      setError(err?.response?.data?.message || "Failed to load categories");
     }
   };
 
   useEffect(() => {
-    fetchCategories();
+    void fetchCategories();
   }, []);
 
-  // create / update
-  const handleSubmit = async () => {
-    if (!name.trim()) return;
+  /**
+   * =====================
+   * RESET
+   * =====================
+   */
+  const resetForm = (): void => {
+    setName("");
+    setEditingId(null);
+  };
+
+  /**
+   * =====================
+   * SUBMIT
+   * =====================
+   */
+  const handleSubmit = async (): Promise<void> => {
+    const trimmed = name.trim();
+
+    if (!trimmed) {
+      setError("Name is required");
+      return;
+    }
 
     try {
       setLoading(true);
+      setError(null);
+
+      const payload: { name: string } = {
+        name: trimmed,
+      };
 
       if (editingId) {
-        await api.put(`/categories/${editingId}`, { name });
-        setEditingId(null);
+        await api.put(`/categories/${editingId}`, payload);
       } else {
-        await api.post("/categories", { name });
+        await api.post("/categories", payload);
       }
 
-      setName("");
-      fetchCategories();
-    } catch (err) {
-      console.error(err);
+      resetForm();
+      await fetchCategories();
+    } catch (e: unknown) {
+      const err = e as ApiError;
+
+      setError(err?.response?.data?.message || "Failed to save category");
     } finally {
       setLoading(false);
     }
   };
 
-  // delete
-  const handleDelete = async (id: string) => {
+  /**
+   * =====================
+   * DELETE
+   * =====================
+   */
+  const handleDelete = async (id: string): Promise<void> => {
     if (!confirm("Delete this category?")) return;
 
     try {
+      setError(null);
+
       await api.delete(`/categories/${id}`);
-      fetchCategories();
-    } catch (err) {
-      console.error(err);
+      await fetchCategories();
+    } catch {
+      setError("Failed to delete category");
     }
   };
 
-  // edit
-  const handleEdit = (cat: Category) => {
+  /**
+   * =====================
+   * EDIT
+   * =====================
+   */
+  const handleEdit = (cat: Category): void => {
     setName(cat.name);
     setEditingId(cat.id);
   };
 
+  /**
+   * =====================
+   * UI
+   * =====================
+   */
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold mb-6">Category Manager</h1>
+
+      {error && (
+        <div className="mb-4 text-sm text-red-500">
+          {error}
+        </div>
+      )}
 
       {/* form */}
       <Card className="mb-6">
@@ -86,6 +164,7 @@ export default function CategoryPage() {
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
+
           <Button onClick={handleSubmit} disabled={loading}>
             {loading ? "Saving..." : editingId ? "Update" : "Add"}
           </Button>

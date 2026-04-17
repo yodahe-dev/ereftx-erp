@@ -1,44 +1,52 @@
 "use client";
 
-import { JSX, useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { motion } from "framer-motion";
+import { Trash2, Pencil } from "lucide-react";
 
-interface Category {
-  id: string;
-  name: string;
-}
-
-interface Brand {
-  id: string;
-  name: string;
-}
-
-interface Packaging {
-  id: string;
-  type: string;
-}
+type ID = string;
 
 interface Product {
-  id: string;
+  id: ID;
   name: string;
-  categoryId: string;
-  brandId: string;
-  packagingId: string;
+  categoryId: ID;
+  brandId: ID;
+  packagingId: ID;
   bottlesPerBox: number;
   boxBuyPrice: number;
   boxSellPrice: number;
   singleSellPrice: number;
 }
 
-export default function ProductPage(): JSX.Element {
-  const [products, setProducts] = useState<Product[]>([]);
+interface Category {
+  id: ID;
+  name: string;
+}
 
+interface Brand {
+  id: ID;
+  name: string;
+}
+
+interface Packaging {
+  id: ID;
+  type: string;
+}
+
+export default function ProductPage() {
+  const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [packagings, setPackagings] = useState<Packaging[]>([]);
+
+  const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState<ID | null>(null);
+
+  const [search, setSearch] = useState("");
 
   const [form, setForm] = useState({
     name: "",
@@ -51,57 +59,54 @@ export default function ProductPage(): JSX.Element {
     singleSellPrice: "",
   });
 
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const fetchAll = async (): Promise<void> => {
+    try {
+      const [p, c, b, pkg] = await Promise.all([
+        api.get<Product[]>("/products"),
+        api.get<Category[]>("/categories"),
+        api.get<Brand[]>("/brands"),
+        api.get<Packaging[]>("/packagings"),
+      ]);
 
-  // =====================
-  // FETCH DATA
-  // =====================
-
-  const fetchAll = async () => {
-    const [p, c, b, pkg] = await Promise.all([
-      api.get<Product[]>("/products"),
-      api.get<Category[]>("/categories"),
-      api.get<Brand[]>("/brands"),
-      api.get<Packaging[]>("/packagings"),
-    ]);
-
-    setProducts(p.data);
-    setCategories(c.data);
-    setBrands(b.data);
-    setPackagings(pkg.data);
+      setProducts(p.data);
+      setCategories(c.data);
+      setBrands(b.data);
+      setPackagings(pkg.data);
+    } catch (err) {
+      console.error("FETCH ERROR:", err);
+    }
   };
 
   useEffect(() => {
     fetchAll();
   }, []);
 
-  // =====================
-  // HANDLE CHANGE
-  // =====================
+  const filtered = useMemo(() => {
+    return products.filter((p) =>
+      p.name.toLowerCase().includes(search.toLowerCase())
+    );
+  }, [products, search]);
 
-  const handleChange = (key: string, value: string) => {
-    setForm((prev) => ({ ...prev, [key]: value }));
+  const reset = (): void => {
+    setForm({
+      name: "",
+      categoryId: "",
+      brandId: "",
+      packagingId: "",
+      bottlesPerBox: 24,
+      boxBuyPrice: "",
+      boxSellPrice: "",
+      singleSellPrice: "",
+    });
+    setEditingId(null);
   };
 
-  // =====================
-  // SUBMIT
-  // =====================
+  const submit = async (): Promise<void> => {
+    if (!form.name) return;
 
-  const handleSubmit = async () => {
-    if (
-      !form.name ||
-      !form.categoryId ||
-      !form.brandId ||
-      !form.packagingId
-    ) {
-      alert("Fill required fields");
-      return;
-    }
+    setLoading(true);
 
     try {
-      setLoading(true);
-
       const payload = {
         name: form.name,
         categoryId: form.categoryId,
@@ -115,44 +120,25 @@ export default function ProductPage(): JSX.Element {
 
       if (editingId) {
         await api.put(`/products/${editingId}`, payload);
-        setEditingId(null);
       } else {
         await api.post("/products", payload);
       }
 
-      setForm({
-        name: "",
-        categoryId: "",
-        brandId: "",
-        packagingId: "",
-        bottlesPerBox: 24,
-        boxBuyPrice: "",
-        boxSellPrice: "",
-        singleSellPrice: "",
-      });
-
-      fetchAll();
+      reset();
+      await fetchAll();
+    } catch (err) {
+      console.error("SAVE ERROR:", err);
     } finally {
       setLoading(false);
     }
   };
 
-  // =====================
-  // DELETE
-  // =====================
-
-  const handleDelete = async (id: string) => {
-    if (!confirm("Delete product?")) return;
-
+  const remove = async (id: ID): Promise<void> => {
     await api.delete(`/products/${id}`);
-    fetchAll();
+    setProducts((prev) => prev.filter((p) => p.id !== id));
   };
 
-  // =====================
-  // EDIT
-  // =====================
-
-  const handleEdit = (p: Product) => {
+  const edit = (p: Product): void => {
     setEditingId(p.id);
 
     setForm({
@@ -167,27 +153,32 @@ export default function ProductPage(): JSX.Element {
     });
   };
 
-  // =====================
-  // UI
-  // =====================
-
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
-      <h1 className="text-3xl font-semibold">Products</h1>
+      <h1 className="text-2xl font-semibold">Products</h1>
 
-      {/* FORM */}
+      <Input
+        placeholder="Search..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+
       <Card>
-        <CardContent className="p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
+        <CardContent className="p-4 grid md:grid-cols-3 gap-2">
           <Input
-            placeholder="Product name"
+            placeholder="Name"
             value={form.name}
-            onChange={(e) => handleChange("name", e.target.value)}
+            onChange={(e) =>
+              setForm((s) => ({ ...s, name: e.target.value }))
+            }
           />
 
           <select
             value={form.categoryId}
-            onChange={(e) => handleChange("categoryId", e.target.value)}
-            className="border rounded px-2"
+            onChange={(e) =>
+              setForm((s) => ({ ...s, categoryId: e.target.value }))
+            }
+            className="border p-2"
           >
             <option value="">Category</option>
             {categories.map((c) => (
@@ -199,8 +190,10 @@ export default function ProductPage(): JSX.Element {
 
           <select
             value={form.brandId}
-            onChange={(e) => handleChange("brandId", e.target.value)}
-            className="border rounded px-2"
+            onChange={(e) =>
+              setForm((s) => ({ ...s, brandId: e.target.value }))
+            }
+            className="border p-2"
           >
             <option value="">Brand</option>
             {brands.map((b) => (
@@ -212,8 +205,10 @@ export default function ProductPage(): JSX.Element {
 
           <select
             value={form.packagingId}
-            onChange={(e) => handleChange("packagingId", e.target.value)}
-            className="border rounded px-2"
+            onChange={(e) =>
+              setForm((s) => ({ ...s, packagingId: e.target.value }))
+            }
+            className="border p-2"
           >
             <option value="">Packaging</option>
             {packagings.map((p) => (
@@ -225,70 +220,72 @@ export default function ProductPage(): JSX.Element {
 
           <Input
             type="number"
-            placeholder="Bottles/Box"
             value={form.bottlesPerBox}
             onChange={(e) =>
-              handleChange("bottlesPerBox", e.target.value)
+              setForm((s) => ({
+                ...s,
+                bottlesPerBox: Number(e.target.value),
+              }))
             }
           />
 
           <Input
-            type="number"
-            placeholder="Box Buy Price"
+            placeholder="Buy"
             value={form.boxBuyPrice}
             onChange={(e) =>
-              handleChange("boxBuyPrice", e.target.value)
+              setForm((s) => ({ ...s, boxBuyPrice: e.target.value }))
             }
           />
 
           <Input
-            type="number"
-            placeholder="Box Sell Price"
+            placeholder="Sell"
             value={form.boxSellPrice}
             onChange={(e) =>
-              handleChange("boxSellPrice", e.target.value)
+              setForm((s) => ({ ...s, boxSellPrice: e.target.value }))
             }
           />
 
           <Input
-            type="number"
-            placeholder="Single Sell Price"
+            placeholder="Single"
             value={form.singleSellPrice}
             onChange={(e) =>
-              handleChange("singleSellPrice", e.target.value)
+              setForm((s) => ({ ...s, singleSellPrice: e.target.value }))
             }
           />
 
-          <Button onClick={handleSubmit} disabled={loading}>
-            {loading ? "Saving..." : editingId ? "Update" : "Add"}
+          <Button onClick={submit} disabled={loading}>
+            {editingId ? "Update" : "Create"}
           </Button>
         </CardContent>
       </Card>
 
-      {/* LIST */}
       <div className="grid gap-3">
-        {products.map((p) => (
-          <Card key={p.id} className="p-4 flex justify-between">
-            <div>
-              <p className="font-medium">{p.name}</p>
-              <p className="text-sm text-muted-foreground">
-                Buy: {p.boxBuyPrice} | Sell: {p.boxSellPrice}
-              </p>
-            </div>
+        {filtered.map((p) => (
+          <motion.div
+            key={p.id}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            <Card className="flex justify-between p-4">
+              <div>
+                <p className="font-medium">{p.name}</p>
+              </div>
 
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => handleEdit(p)}>
-                Edit
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => handleDelete(p.id)}
-              >
-                Delete
-              </Button>
-            </div>
-          </Card>
+              <div className="flex gap-2">
+                <Button size="icon" onClick={() => edit(p)}>
+                  <Pencil size={16} />
+                </Button>
+
+                <Button
+                  size="icon"
+                  variant="destructive"
+                  onClick={() => remove(p.id)}
+                >
+                  <Trash2 size={16} />
+                </Button>
+              </div>
+            </Card>
+          </motion.div>
         ))}
       </div>
     </div>

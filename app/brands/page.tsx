@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { JSX, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,76 +8,165 @@ import { Card, CardContent } from "@/components/ui/card";
 import { motion } from "framer-motion";
 import { Trash2, Pencil } from "lucide-react";
 
+/**
+ * =====================
+ * TYPES
+ * =====================
+ */
 interface Brand {
   id: string;
   name: string;
 }
 
-export default function BrandPage() {
+interface ApiError {
+  response?: {
+    data?: {
+      message?: string;
+    };
+  };
+}
+
+/**
+ * =====================
+ * COMPONENT
+ * =====================
+ */
+export default function BrandPage(): JSX.Element {
   const [brands, setBrands] = useState<Brand[]>([]);
   const [name, setName] = useState<string>("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [search, setSearch] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
 
+  /**
+   * =====================
+   * FETCH
+   * =====================
+   */
   const fetchBrands = async (): Promise<void> => {
     try {
+      setError(null);
+
       const res = await api.get<Brand[]>("/brands");
+
+      if (!Array.isArray(res.data)) {
+        throw new Error("Invalid API response");
+      }
+
       setBrands(res.data);
-    } catch (error) {
-      console.error("Fetch error:", error);
+    } catch (e: unknown) {
+      const err = e as ApiError;
+
+      setError(err?.response?.data?.message || "Failed to load brands");
     }
   };
 
   useEffect(() => {
-    fetchBrands();
+    void fetchBrands();
   }, []);
 
+  /**
+   * =====================
+   * FILTER
+   * =====================
+   */
+  const filteredBrands = useMemo<Brand[]>(() => {
+    const q = search.toLowerCase();
+
+    return brands.filter((b) => b.name.toLowerCase().includes(q));
+  }, [brands, search]);
+
+  /**
+   * =====================
+   * RESET
+   * =====================
+   */
+  const resetForm = (): void => {
+    setName("");
+    setEditingId(null);
+  };
+
+  /**
+   * =====================
+   * SUBMIT
+   * =====================
+   */
   const handleSubmit = async (): Promise<void> => {
-    if (!name.trim()) return;
+    const trimmed = name.trim();
+
+    if (!trimmed) {
+      setError("Brand name is required");
+      return;
+    }
 
     try {
       setLoading(true);
+      setError(null);
+
+      const payload: { name: string } = {
+        name: trimmed,
+      };
 
       if (editingId) {
-        await api.put(`/brands/${editingId}`, { name });
-        setEditingId(null);
+        await api.put(`/brands/${editingId}`, payload);
       } else {
-        await api.post("/brands", { name });
+        await api.post("/brands", payload);
       }
 
-      setName("");
+      resetForm();
       await fetchBrands();
-    } catch (error) {
-      console.error("Submit error:", error);
+    } catch (e: unknown) {
+      const err = e as ApiError;
+
+      setError(err?.response?.data?.message || "Failed to save brand");
     } finally {
       setLoading(false);
     }
   };
 
+  /**
+   * =====================
+   * DELETE
+   * =====================
+   */
   const handleDelete = async (id: string): Promise<void> => {
     if (!confirm("Delete this brand?")) return;
 
     try {
+      setError(null);
+
       await api.delete(`/brands/${id}`);
       await fetchBrands();
-    } catch (error) {
-      console.error("Delete error:", error);
+    } catch {
+      setError("Failed to delete brand");
     }
   };
 
+  /**
+   * =====================
+   * EDIT
+   * =====================
+   */
   const handleEdit = (brand: Brand): void => {
     setName(brand.name);
     setEditingId(brand.id);
   };
 
-  const filteredBrands = brands.filter((b) =>
-    b.name.toLowerCase().includes(search.toLowerCase())
-  );
-
+  /**
+   * =====================
+   * UI
+   * =====================
+   */
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       <h1 className="text-3xl font-semibold">Brand Manager</h1>
+
+      {error && (
+        <div className="text-sm text-red-500">
+          {error}
+        </div>
+      )}
 
       {/* top controls */}
       <div className="grid md:grid-cols-2 gap-4">
@@ -88,6 +177,7 @@ export default function BrandPage() {
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
+
             <Button onClick={handleSubmit} disabled={loading}>
               {loading ? "Saving..." : editingId ? "Update" : "Add"}
             </Button>
