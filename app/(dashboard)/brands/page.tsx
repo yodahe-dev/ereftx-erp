@@ -6,6 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -49,9 +56,19 @@ import { toast } from "sonner";
  * TYPES
  * =====================
  */
+interface Category {
+  id: string;
+  name: string;
+}
+
 interface Brand {
   id: string;
   name: string;
+  categoryId: string;
+  category?: {
+    id: string;
+    name: string;
+  };
 }
 
 interface ApiError {
@@ -67,7 +84,7 @@ interface ApiError {
  * CONSTANTS
  * =====================
  */
-const UNDO_TIMEOUT_SECONDS = 5;
+const UNDO_SECONDS = 10;
 
 /**
  * =====================
@@ -76,7 +93,9 @@ const UNDO_TIMEOUT_SECONDS = 5;
  */
 export default function BrandPage(): JSX.Element {
   const [brands, setBrands] = useState<Brand[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [name, setName] = useState<string>("");
+  const [categoryId, setCategoryId] = useState<string>("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [search, setSearch] = useState<string>("");
@@ -86,12 +105,11 @@ export default function BrandPage(): JSX.Element {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
   const [deleteBrandId, setDeleteBrandId] = useState<string | null>(null);
-  const [deleteTimer, setDeleteTimer] = useState<number>(UNDO_TIMEOUT_SECONDS);
-  const [deleteIntervalId, setDeleteIntervalId] = useState<NodeJS.Timeout | null>(null);
+  const [deletedBrand, setDeletedBrand] = useState<Brand | null>(null);
 
   /**
    * =====================
-   * FETCH
+   * FETCH DATA
    * =====================
    */
   const fetchBrands = async (): Promise<void> => {
@@ -108,8 +126,20 @@ export default function BrandPage(): JSX.Element {
     }
   };
 
+  const fetchCategories = async (): Promise<void> => {
+    try {
+      const res = await api.get<Category[]>("/categories");
+      if (Array.isArray(res.data)) {
+        setCategories(res.data);
+      }
+    } catch (e) {
+      console.error("Failed to load categories", e);
+    }
+  };
+
   useEffect(() => {
     void fetchBrands();
+    void fetchCategories();
   }, []);
 
   /**
@@ -129,6 +159,7 @@ export default function BrandPage(): JSX.Element {
    */
   const resetForm = (): void => {
     setName("");
+    setCategoryId("");
     setEditingId(null);
   };
 
@@ -144,6 +175,7 @@ export default function BrandPage(): JSX.Element {
 
   const openEditDialog = (brand: Brand): void => {
     setName(brand.name);
+    setCategoryId(brand.categoryId);
     setEditingId(brand.id);
     setDialogOpen(true);
   };
@@ -160,8 +192,14 @@ export default function BrandPage(): JSX.Element {
    */
   const handleSubmit = async (): Promise<void> => {
     const trimmed = name.trim();
+
     if (!trimmed) {
       setError("Brand name is required");
+      return;
+    }
+
+    if (!categoryId) {
+      setError("Please select a category");
       return;
     }
 
@@ -169,7 +207,10 @@ export default function BrandPage(): JSX.Element {
       setLoading(true);
       setError(null);
 
-      const payload: { name: string } = { name: trimmed };
+      const payload = {
+        name: trimmed,
+        categoryId,
+      };
 
       if (editingId) {
         await api.put(`/brands/${editingId}`, payload);
@@ -195,40 +236,55 @@ export default function BrandPage(): JSX.Element {
    * DELETE WITH UNDO
    * =====================
    */
-  const initiateDelete = (id: string): void => {
-    setDeleteBrandId(id);
-    setDeleteTimer(UNDO_TIMEOUT_SECONDS);
+  const initiateDelete = (brand: Brand): void => {
+    setDeleteBrandId(brand.id);
+    setDeletedBrand(brand);
     setDeleteAlertOpen(true);
-    const interval = setInterval(() => {
-      setDeleteTimer((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    setDeleteIntervalId(interval);
-  };
-
-  const cancelDelete = (): void => {
-    if (deleteIntervalId) clearInterval(deleteIntervalId);
-    setDeleteAlertOpen(false);
-    setDeleteBrandId(null);
-    setDeleteTimer(UNDO_TIMEOUT_SECONDS);
   };
 
   const confirmDelete = async (): Promise<void> => {
-    if (!deleteBrandId) return;
+    if (!deleteBrandId || !deletedBrand) return;
+
     try {
       await api.delete(`/brands/${deleteBrandId}`);
-      toast.success("Brand deleted");
-      await fetchBrands();
-    } catch {
-      toast.error("Failed to delete brand");
+      // Remove from local state immediately
+      setBrands((prev) => prev.filter((b) => b.id !== deleteBrandId));
+      // Show undo toast
+      toast("Brand deleted", {
+        description: "You can undo this action within 10 seconds.",
+        duration: UNDO_SECONDS * 1000,
+        position: "bottom-left",
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            try {
+              // Re-create the brand with saved data
+              await api.post("/brands", {
+                name: deletedBrand.name,
+                categoryId: deletedBrand.categoryId,
+              });
+              toast.success("Brand restored");
+              await fetchBrands();
+            } catch (e: any) {
+              toast.error(e?.response?.data?.message || "Failed to undo delete");
+            }
+          },
+        },
+      });
+    } catch (e: unknown) {
+      const err = e as ApiError;
+      toast.error(err?.response?.data?.message || "Failed to delete brand");
     } finally {
-      cancelDelete();
+      setDeleteAlertOpen(false);
+      setDeleteBrandId(null);
+      setDeletedBrand(null);
     }
+  };
+
+  const cancelDelete = (): void => {
+    setDeleteAlertOpen(false);
+    setDeleteBrandId(null);
+    setDeletedBrand(null);
   };
 
   /**
@@ -340,9 +396,16 @@ export default function BrandPage(): JSX.Element {
                         <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-indigo-100 to-purple-100 dark:from-indigo-900/50 dark:to-purple-900/50 flex items-center justify-center">
                           <Tag className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
                         </div>
-                        <span className="font-medium text-gray-800 dark:text-gray-100">
-                          {brand.name}
-                        </span>
+                        <div>
+                          <span className="font-medium text-gray-800 dark:text-gray-100">
+                            {brand.name}
+                          </span>
+                          {brand.category && (
+                            <p className="text-xs text-muted-foreground">
+                              {brand.category.name}
+                            </p>
+                          )}
+                        </div>
                       </div>
                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                         <Tooltip>
@@ -364,7 +427,7 @@ export default function BrandPage(): JSX.Element {
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
-                              onClick={() => initiateDelete(brand.id)}
+                              onClick={() => initiateDelete(brand)}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
@@ -389,7 +452,7 @@ export default function BrandPage(): JSX.Element {
               </DialogTitle>
               <DialogDescription>
                 {editingId
-                  ? "Update the brand name"
+                  ? "Update the brand details"
                   : "Create a new product brand"}
               </DialogDescription>
             </DialogHeader>
@@ -403,6 +466,24 @@ export default function BrandPage(): JSX.Element {
                   className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
                   autoFocus
                 />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Category *</Label>
+                <Select
+                  value={categoryId}
+                  onValueChange={(v) => setCategoryId(v)}
+                >
+                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                    <SelectValue placeholder="Select a category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((cat) => (
+                      <SelectItem key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <DialogFooter>
@@ -424,19 +505,14 @@ export default function BrandPage(): JSX.Element {
           </DialogContent>
         </Dialog>
 
-        {/* Delete Confirmation with Undo */}
+        {/* Delete Confirmation (simple yes/no) */}
         <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Delete Brand</AlertDialogTitle>
               <AlertDialogDescription>
                 This brand will be permanently removed.
-                {deleteTimer > 0 && (
-                  <span className="block mt-2 text-amber-600 dark:text-amber-400">
-                    Undo available for {deleteTimer} second
-                    {deleteTimer !== 1 ? "s" : ""}...
-                  </span>
-                )}
+                You can undo this action for 10 seconds after deletion.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
