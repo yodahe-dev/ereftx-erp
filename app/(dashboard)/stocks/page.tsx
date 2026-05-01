@@ -197,7 +197,7 @@ const PRODUCTS_PAGE_LIMIT = 1000;
 const DEFAULT_UNITS_PER_BOX = 24;
 const CURRENCY = "ETB";
 const LOW_STOCK_BOX_THRESHOLD = 2;
-const UNDO_TIMEOUT_SECONDS = 5;
+const UNDO_SECONDS = 10;
 
 export default function StockPage(): JSX.Element {
   const [stocks, setStocks] = useState<Stock[]>([]);
@@ -291,7 +291,11 @@ export default function StockPage(): JSX.Element {
     totalInventoryValue: 0,
   });
 
-  // Delete state removed; we'll use sonner toast with undo
+  // Delete confirmation (simple dialog, no timer)
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
+  const [deleteStockId, setDeleteStockId] = useState<string | null>(null);
+  // We'll keep the deleted stock data for potential undo
+  const [deletedStock, setDeletedStock] = useState<Stock | null>(null);
 
   // ==================== LOCALSTORAGE SYNC ====================
   useEffect(() => {
@@ -613,29 +617,57 @@ export default function StockPage(): JSX.Element {
     }
   };
 
-  const handleDeleteStock = (id: string) => {
-    // Use sonner toast with undo
-    toast("Stock will be deleted", {
-      description: "You have 5 seconds to undo this action.",
-      duration: UNDO_TIMEOUT_SECONDS * 1000,
-      action: {
-        label: "Undo",
-        onClick: () => {
-          // User clicked undo, cancel deletion
-          // Nothing to do, toast will close
+  // ==================== DELETE WITH UNDO ====================
+  const initiateDelete = (stock: Stock) => {
+    setDeleteStockId(stock.id);
+    setDeletedStock(stock);
+    setDeleteAlertOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteStockId || !deletedStock) return;
+
+    try {
+      await api.delete(`/stocks/${deleteStockId}`);
+      // Remove the stock from local state immediately (optimistic)
+      setStocks((prev) => prev.filter((s) => s.id !== deleteStockId));
+      // Show undo toast
+      toast("Stock deleted", {
+        description: "You can undo this action within 10 seconds.",
+        duration: UNDO_SECONDS * 1000,
+        position: "bottom-left",
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            try {
+              // Re-create the stock using the saved deleted data
+              await api.post("/stocks", {
+                productId: deletedStock.productId,
+                boxQuantity: deletedStock.boxQuantity,
+                singleQuantity: deletedStock.singleQuantity,
+                containerType: deletedStock.containerType,
+              });
+              toast.success("Stock restored");
+              await fetchAll();
+            } catch (e: any) {
+              toast.error(e?.response?.data?.message || "Failed to undo delete");
+            }
+          },
         },
-      },
-      onAutoClose: async () => {
-        // Toast closed automatically after timeout (no undo clicked)
-        try {
-          await api.delete(`/stocks/${id}`);
-          toast.success("Stock deleted");
-          await fetchAll();
-        } catch (e) {
-          toast.error("Failed to delete stock");
-        }
-      },
-    });
+      });
+    } catch (e) {
+      toast.error("Failed to delete stock");
+    } finally {
+      setDeleteAlertOpen(false);
+      setDeleteStockId(null);
+      setDeletedStock(null);
+    }
+  };
+
+  const cancelDelete = () => {
+    setDeleteAlertOpen(false);
+    setDeleteStockId(null);
+    setDeletedStock(null);
   };
 
   // ==================== RESTOCK ====================
@@ -1430,7 +1462,7 @@ export default function StockPage(): JSX.Element {
                                     className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      handleDeleteStock(stock.id);
+                                      initiateDelete(stock);
                                     }}
                                   >
                                     <Trash2 className="h-4 w-4" />
@@ -1661,6 +1693,28 @@ export default function StockPage(): JSX.Element {
             </Table>
           </Card>
         </div>
+
+        {/* Delete Confirmation Dialog (simple yes/no) */}
+        <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Stock Entry</AlertDialogTitle>
+              <AlertDialogDescription>
+                This action cannot be undone. The stock record will be permanently
+                deleted.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={cancelDelete}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={confirmDelete}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                Delete Now
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {/* Stock Form Dialog */}
         <Dialog open={formDialogOpen} onOpenChange={setFormDialogOpen}>
@@ -2171,9 +2225,9 @@ export default function StockPage(): JSX.Element {
           </DialogContent>
         </Dialog>
 
-        {/* Stock History Dialog - IMPROVED SIZE */}
+        {/* Stock History Dialog */}
         <Dialog open={stockHistoryDialogOpen} onOpenChange={setStockHistoryDialogOpen}>
-          <DialogContent className="min-w-[800px]  max-h-[80vh] border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl overflow-hidden flex flex-col">
+          <DialogContent className="max-w-3xl border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
                 Stock History
@@ -2182,7 +2236,7 @@ export default function StockPage(): JSX.Element {
                 {selectedStockForHistory?.product?.name} - Inventory change log
               </DialogDescription>
             </DialogHeader>
-            <div className="flex-1 overflow-auto pr-1">
+            <div className="max-h-96 overflow-y-auto">
               {historyLoading ? (
                 <div className="py-8 text-center">
                   <RefreshCw className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
@@ -2194,19 +2248,19 @@ export default function StockPage(): JSX.Element {
               ) : (
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-100 dark:bg-slate-800 sticky top-0">
-                      <TableHead className="w-[180px]">Date</TableHead>
-                      <TableHead className="w-[100px]">Action</TableHead>
-                      <TableHead className="w-[120px]">Boxes</TableHead>
-                      <TableHead className="w-[120px]">Singles</TableHead>
-                      <TableHead className="w-[200px]">Change</TableHead>
+                    <TableRow>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Action</TableHead>
+                      <TableHead>Boxes</TableHead>
+                      <TableHead>Singles</TableHead>
+                      <TableHead>Change</TableHead>
                       <TableHead>Notes</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {stockHistoryRecords.map((record) => (
                       <TableRow key={record.id}>
-                        <TableCell className="whitespace-nowrap">
+                        <TableCell>
                           {new Date(record.createdAt).toLocaleString()}
                         </TableCell>
                         <TableCell>
@@ -2224,9 +2278,7 @@ export default function StockPage(): JSX.Element {
                           {record.singleQuantityChange >= 0 ? "+" : ""}
                           {record.singleQuantityChange})
                         </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          {record.notes || "—"}
-                        </TableCell>
+                        <TableCell>{record.notes || "—"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -2241,9 +2293,9 @@ export default function StockPage(): JSX.Element {
           </DialogContent>
         </Dialog>
 
-        {/* Entity Management Dialog - IMPROVED SIZE */}
+        {/* Entity Management Dialog */}
         <Dialog open={entityDialogOpen} onOpenChange={setEntityDialogOpen}>
-          <DialogContent className="min-w-[800px] max-h-[90vh] overflow-y-auto border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
+          <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
                 Quick Management
@@ -2778,12 +2830,12 @@ export default function StockPage(): JSX.Element {
           </DialogContent>
         </Dialog>
 
-        {/* Price History Dialog - IMPROVED SIZE */}
+        {/* Price History Dialog */}
         <Dialog
           open={priceHistoryDialogOpen}
           onOpenChange={setPriceHistoryDialogOpen}
         >
-          <DialogContent className="min-w-[600px] max-h-[70vh] border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl overflow-hidden flex flex-col">
+          <DialogContent className="max-w-2xl border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
                 Price History
@@ -2792,10 +2844,10 @@ export default function StockPage(): JSX.Element {
                 {selectedProductForHistory?.name} - Historical pricing records
               </DialogDescription>
             </DialogHeader>
-            <div className="flex-1 overflow-auto pr-1">
+            <div className="max-h-96 overflow-y-auto">
               <Table>
                 <TableHeader>
-                  <TableRow className="bg-slate-100 dark:bg-slate-800 sticky top-0">
+                  <TableRow className="bg-slate-100 dark:bg-slate-800">
                     <TableHead>Start Date</TableHead>
                     <TableHead>End Date</TableHead>
                     <TableHead>Buy/Box</TableHead>
