@@ -1,6 +1,6 @@
 "use client";
 
-import React, { JSX, useEffect, useMemo, useState } from "react";
+import React, { JSX, useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,12 +55,9 @@ import {
   Package,
   AlertCircle,
   Search,
-  ChevronDown,
   ChevronRight,
   Box,
   RefreshCw,
-  Pin,
-  PinOff,
   ArrowLeftRight,
   Calculator,
   Settings,
@@ -79,6 +76,8 @@ import {
   AlertTriangle,
   Gift,
   Clock,
+  Pin,
+  PinOff,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -125,7 +124,7 @@ interface Brand {
 
 interface Packaging {
   id: string;
-  type: string;
+  name: string;
 }
 
 interface Stock {
@@ -269,8 +268,7 @@ export default function StockPage(): JSX.Element {
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
 
   const [priceHistoryDialogOpen, setPriceHistoryDialogOpen] = useState(false);
-  const [selectedProductForHistory, setSelectedProductForHistory] =
-    useState<Product | null>(null);
+  const [selectedProductForHistory, setSelectedProductForHistory] = useState<Product | null>(null);
 
   const [stockHistoryDialogOpen, setStockHistoryDialogOpen] = useState(false);
   const [selectedStockForHistory, setSelectedStockForHistory] = useState<Stock | null>(null);
@@ -291,11 +289,11 @@ export default function StockPage(): JSX.Element {
     totalInventoryValue: 0,
   });
 
-  // Delete confirmation (simple dialog, no timer)
+  // Delete with undo
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
-  const [deleteStockId, setDeleteStockId] = useState<string | null>(null);
-  // We'll keep the deleted stock data for potential undo
-  const [deletedStock, setDeletedStock] = useState<Stock | null>(null);
+  const [deleteStock, setDeleteStock] = useState<Stock | null>(null);
+  const [deletedStockBackup, setDeletedStockBackup] = useState<Stock | null>(null);
+  const undoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // ==================== LOCALSTORAGE SYNC ====================
   useEffect(() => {
@@ -436,8 +434,8 @@ export default function StockPage(): JSX.Element {
     categories.find((c) => c.id === id)?.name ?? "—";
   const getBrandName = (id: string): string =>
     brands.find((b) => b.id === id)?.name ?? "—";
-  const getPackagingType = (id: string): string =>
-    packagings.find((p) => p.id === id)?.type ?? "—";
+  const getPackagingName = (id: string): string =>
+    packagings.find((p) => p.id === id)?.name ?? "—";
 
   const calculateStockProfit = (stock: Stock) => {
     const product = stock.product;
@@ -618,56 +616,65 @@ export default function StockPage(): JSX.Element {
   };
 
   // ==================== DELETE WITH UNDO ====================
-  const initiateDelete = (stock: Stock) => {
-    setDeleteStockId(stock.id);
-    setDeletedStock(stock);
+  const confirmDelete = (stock: Stock) => {
+    setDeleteStock(stock);
     setDeleteAlertOpen(true);
   };
 
-  const confirmDelete = async () => {
-    if (!deleteStockId || !deletedStock) return;
+  const performDelete = async () => {
+    if (!deleteStock) return;
 
-    try {
-      await api.delete(`/stocks/${deleteStockId}`);
-      // Remove the stock from local state immediately (optimistic)
-      setStocks((prev) => prev.filter((s) => s.id !== deleteStockId));
-      // Show undo toast
-      toast("Stock deleted", {
-        description: "You can undo this action within 10 seconds.",
-        duration: UNDO_SECONDS * 1000,
-        position: "bottom-left",
-        action: {
-          label: "Undo",
-          onClick: async () => {
+    const backup = { ...deleteStock };
+    setDeletedStockBackup(backup);
+
+    setStocks((prev) => prev.filter((s) => s.id !== deleteStock.id));
+    // Update stats locally (rough)
+    setStats(prev => ({
+      ...prev,
+      totalBoxes: prev.totalBoxes - deleteStock.boxQuantity,
+      totalSingles: prev.totalSingles - deleteStock.singleQuantity,
+      lowStockItems: prev.lowStockItems - ((deleteStock.boxQuantity === 0 && deleteStock.singleQuantity === 0) ? 1 : 0),
+    }));
+
+    setDeleteAlertOpen(false);
+    setDeleteStock(null);
+
+    toast("Stock entry deleted", {
+      description: `You have ${UNDO_SECONDS} seconds to undo this action.`,
+      duration: UNDO_SECONDS * 1000,
+      position: "bottom-left",
+      action: {
+        label: "Undo",
+        onClick: async () => {
+          if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
+          if (deletedStockBackup) {
             try {
-              // Re-create the stock using the saved deleted data
               await api.post("/stocks", {
-                productId: deletedStock.productId,
-                boxQuantity: deletedStock.boxQuantity,
-                singleQuantity: deletedStock.singleQuantity,
-                containerType: deletedStock.containerType,
+                productId: deletedStockBackup.productId,
+                boxQuantity: deletedStockBackup.boxQuantity,
+                singleQuantity: deletedStockBackup.singleQuantity,
+                containerType: deletedStockBackup.containerType,
               });
               toast.success("Stock restored");
               await fetchAll();
-            } catch (e: any) {
-              toast.error(e?.response?.data?.message || "Failed to undo delete");
+            } catch (e) {
+              toast.error("Failed to restore stock");
             }
-          },
+            setDeletedStockBackup(null);
+          }
         },
-      });
-    } catch (e) {
-      toast.error("Failed to delete stock");
-    } finally {
-      setDeleteAlertOpen(false);
-      setDeleteStockId(null);
-      setDeletedStock(null);
-    }
-  };
+      },
+    });
 
-  const cancelDelete = () => {
-    setDeleteAlertOpen(false);
-    setDeleteStockId(null);
-    setDeletedStock(null);
+    undoTimeoutRef.current = setTimeout(async () => {
+      try {
+        await api.delete(`/stocks/${deleteStock.id}`);
+      } catch (e) {
+        // ignore
+      } finally {
+        if (undoTimeoutRef.current) undoTimeoutRef.current = null;
+      }
+    }, UNDO_SECONDS * 1000);
   };
 
   // ==================== RESTOCK ====================
@@ -953,7 +960,7 @@ export default function StockPage(): JSX.Element {
   const handleEditEntity = (item: Category | Brand | Packaging) => {
     setEditingEntityId(item.id);
     if (activeEntityTab === "packaging") {
-      setEntityForm({ name: "", type: (item as Packaging).type });
+      setEntityForm({ name: "", type: (item as Packaging).name });
     } else {
       setEntityForm({ name: (item as Category | Brand).name, type: "" });
     }
@@ -970,6 +977,7 @@ export default function StockPage(): JSX.Element {
     }
   };
 
+  // ---------- Filtered entities (safe) ----------
   const filteredProducts = useMemo(() => {
     const lower = entitySearch.toLowerCase();
     return products.filter((p) => p.name.toLowerCase().includes(lower));
@@ -987,7 +995,7 @@ export default function StockPage(): JSX.Element {
 
   const filteredPackagings = useMemo(() => {
     const lower = entitySearch.toLowerCase();
-    return packagings.filter((p) => p.type.toLowerCase().includes(lower));
+    return packagings.filter((p) => p.name.toLowerCase().includes(lower));
   }, [packagings, entitySearch]);
 
   const toggleRowExpanded = (id: string) => {
@@ -1462,7 +1470,7 @@ export default function StockPage(): JSX.Element {
                                     className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      initiateDelete(stock);
+                                      confirmDelete(stock);
                                     }}
                                   >
                                     <Trash2 className="h-4 w-4" />
@@ -1509,7 +1517,7 @@ export default function StockPage(): JSX.Element {
                                         Packaging:
                                       </span>
                                       <span className="font-medium capitalize">
-                                        {getPackagingType(product?.packagingId || "")}
+                                        {getPackagingName(product?.packagingId || "")}
                                       </span>
                                       <span className="text-muted-foreground">
                                         Units/Box:
@@ -1521,19 +1529,19 @@ export default function StockPage(): JSX.Element {
                                         Buy Price/Box:
                                       </span>
                                       <span className="font-mono font-medium text-blue-600">
-                                        {product?.buyPricePerBox?.toFixed(2)} {CURRENCY}
+                                        {Number(product?.buyPricePerBox || 0).toFixed(2)} {CURRENCY}
                                       </span>
                                       <span className="text-muted-foreground">
                                         Sell Price/Box:
                                       </span>
                                       <span className="font-mono font-medium text-emerald-600">
-                                        {product?.sellPricePerBox?.toFixed(2)} {CURRENCY}
+                                        {Number(product?.sellPricePerBox || 0).toFixed(2)} {CURRENCY}
                                       </span>
                                       <span className="text-muted-foreground">
                                         Sell Price/Unit:
                                       </span>
                                       <span className="font-mono font-medium text-emerald-600">
-                                        {product?.sellPricePerUnit?.toFixed(2)} {CURRENCY}
+                                        {Number(product?.sellPricePerUnit || 0).toFixed(2)} {CURRENCY}
                                       </span>
                                     </div>
                                   </div>
@@ -1694,23 +1702,25 @@ export default function StockPage(): JSX.Element {
           </Card>
         </div>
 
-        {/* Delete Confirmation Dialog (simple yes/no) */}
+        {/* Delete Confirmation Dialog */}
         <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Delete Stock Entry</AlertDialogTitle>
               <AlertDialogDescription>
-                This action cannot be undone. The stock record will be permanently
-                deleted.
+                Are you sure you want to delete stock for{" "}
+                <strong>{deleteStock?.product?.name}</strong>?
+                <br />
+                You will have {UNDO_SECONDS} seconds to undo this action.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel onClick={cancelDelete}>Cancel</AlertDialogCancel>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
-                onClick={confirmDelete}
+                onClick={performDelete}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
-                Delete Now
+                Delete
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -1878,9 +1888,7 @@ export default function StockPage(): JSX.Element {
                   type="number"
                   step="0.01"
                   min={0}
-                  placeholder={`Current: ${restockStock?.product?.buyPricePerBox?.toFixed(
-                    2
-                  )} ${CURRENCY}`}
+                  placeholder={`Current: ${Number(restockStock?.product?.buyPricePerBox || 0).toFixed(2)} ${CURRENCY}`}
                   value={restockNewBuyPrice}
                   onChange={(e) => setRestockNewBuyPrice(e.target.value)}
                   className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
@@ -2442,7 +2450,7 @@ export default function StockPage(): JSX.Element {
                         <SelectContent>
                           {packagings.map((p) => (
                             <SelectItem key={p.id} value={p.id}>
-                              {p.type}
+                              {p.name}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -2543,12 +2551,12 @@ export default function StockPage(): JSX.Element {
                           <div className="text-xs text-muted-foreground">
                             {getCategoryName(product.categoryId)} |{" "}
                             {getBrandName(product.brandId)} |{" "}
-                            {getPackagingType(product.packagingId)}
+                            {getPackagingName(product.packagingId)}
                           </div>
                           <div className="text-xs text-muted-foreground">
-                            Box: {product.buyPricePerBox?.toFixed(2)} /{" "}
-                            {product.sellPricePerBox?.toFixed(2)} {CURRENCY} |
-                            Single: {product.sellPricePerUnit?.toFixed(2)}{" "}
+                            Box: {Number(product.buyPricePerBox || 0).toFixed(2)} /{" "}
+                            {Number(product.sellPricePerBox || 0).toFixed(2)} {CURRENCY} |
+                            Single: {Number(product.sellPricePerUnit || 0).toFixed(2)}{" "}
                             {CURRENCY}
                           </div>
                         </div>
@@ -2760,7 +2768,7 @@ export default function StockPage(): JSX.Element {
                       key={pkg.id}
                       className="flex items-center justify-between rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm px-3 py-2"
                     >
-                      <span className="capitalize font-medium">{pkg.type}</span>
+                      <span className="capitalize font-medium">{pkg.name}</span>
                       <div className="flex gap-1">
                         <Button
                           variant="ghost"

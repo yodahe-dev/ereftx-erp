@@ -20,6 +20,16 @@ import {
   DialogFooter,
   DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -47,7 +57,6 @@ import {
   AlertCircle,
   Search,
   Settings,
-  ChevronDown,
   ChevronRight,
   Loader2,
   Clock,
@@ -57,34 +66,18 @@ import {
   Archive,
 } from "lucide-react";
 import { toast } from "sonner";
-import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 
-// ==================== TYPES (aligned with updated backend) ====================
+// ==================== TYPES ====================
 interface ProductPrice {
   id: string;
   productId: string;
-  buyPricePerBox: number;
-  sellPricePerBox: number;
-  sellPricePerUnit: number;
+  buyPricePerBox: number | string;
+  sellPricePerBox: number | string;
+  sellPricePerUnit: number | string;
   startAt: string;
   endAt: string | null;
   allowLoss: boolean;
-}
-
-interface Product {
-  id: string;
-  name: string;
-  description?: string | null;
-  unitsPerBox: number; // aligned backend name
-  categoryId: string;
-  brandId: string;
-  packagingId: string;
-  isActive: boolean; // still present in model even if not in create payload
-  allowLoss: boolean; // stored on price, but we might show it from latest price
-  prices?: ProductPrice[];
-  createdAt?: string;
-  updatedAt?: string;
 }
 
 interface Category {
@@ -95,22 +88,45 @@ interface Category {
 interface Brand {
   id: string;
   name: string;
+  categoryId: string;
+  category?: Category;
 }
 
+// Backend Packaging model uses "name", not "type"
 interface Packaging {
   id: string;
-  type: string;
+  name: string;        // e.g., "bottle", "can", "plastic"
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+interface Product {
+  id: string;
+  name: string;
+  description?: string | null;
+  unitsPerBox: number;
+  brandId: string;
+  packagingId: string;
+  brand?: {
+    id: string;
+    name: string;
+    category?: Category;
+  };
+  packaging?: {
+    id: string;
+    name: string;      // backend returns "name"
+  };
+  prices?: ProductPrice[];
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 // ==================== CONSTANTS ====================
 const DEFAULT_UNITS_PER_BOX = 24;
 const CURRENCY = "ETB";
 const PRODUCTS_PAGE_SIZE = 20;
-const UNDO_TIMEOUT_SECONDS = 5;
+const UNDO_SECONDS = 10;
 
-type FilterType = "all" | "active" | "inactive";
-
-// ==================== MAIN PAGE ====================
 export default function ProductPage(): JSX.Element {
   // ---------- Data states ----------
   const [products, setProducts] = useState<Product[]>([]);
@@ -126,36 +142,46 @@ export default function ProductPage(): JSX.Element {
 
   // ---------- UI filters ----------
   const [search, setSearch] = useState("");
-  const [filterType, setFilterType] = useState<FilterType>("all");
 
   // ---------- Product form dialog ----------
   const [formDialogOpen, setFormDialogOpen] = useState(false);
   const [form, setForm] = useState({
     name: "",
     description: "",
-    isActive: true,
-    categoryId: "",
     brandId: "",
     packagingId: "",
     unitsPerBox: DEFAULT_UNITS_PER_BOX,
-    allowLoss: false,
     buyPricePerBox: "",
     sellPricePerBox: "",
     sellPricePerUnit: "",
+    allowLoss: false,
   });
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  // ---------- Delete confirmation ----------
+  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+  const [deletedProductBackup, setDeletedProductBackup] = useState<Product | null>(null);
+  const undoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   // ---------- Entity management dialog ----------
   const [entityDialogOpen, setEntityDialogOpen] = useState(false);
-  const [activeEntityTab, setActiveEntityTab] = useState<"category" | "brand" | "packaging">("category");
-  const [entityForm, setEntityForm] = useState({ name: "", type: "" });
+  const [activeEntityTab, setActiveEntityTab] = useState<
+    "category" | "brand" | "packaging"
+  >("category");
+  const [entityForm, setEntityForm] = useState({
+    name: "",
+    type: "",
+    categoryId: "",
+  });
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
   const [entitySearch, setEntitySearch] = useState("");
+  const [entityLoading, setEntityLoading] = useState(false);
 
   // ---------- Expandable rows ----------
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
-  // Intersection Observer ref for infinite scroll
+  // Infinite scroll
   const observerRef = useRef<IntersectionObserver | null>(null);
   const lastProductElementRef = useRef<HTMLTableRowElement | null>(null);
 
@@ -182,8 +208,8 @@ export default function ProductPage(): JSX.Element {
       setPage(currentPage);
     } catch (e) {
       const message =
-        (e as { response?: { data?: { message?: string } } })?.response?.data?.message ||
-        "Failed to load products";
+        (e as { response?: { data?: { message?: string } } })?.response?.data
+          ?.message || "Failed to load products";
       setError(message);
       toast.error(message);
     } finally {
@@ -208,13 +234,11 @@ export default function ProductPage(): JSX.Element {
     }
   };
 
-  // Initial load
   useEffect(() => {
     fetchProducts(1, true);
     fetchSupportingData();
   }, []);
 
-  // Reset pagination when search changes
   useEffect(() => {
     setProducts([]);
     setPage(1);
@@ -222,7 +246,6 @@ export default function ProductPage(): JSX.Element {
     fetchProducts(1, true);
   }, [search]);
 
-  // Infinite scroll setup
   useEffect(() => {
     if (observerRef.current) observerRef.current.disconnect();
 
@@ -244,34 +267,14 @@ export default function ProductPage(): JSX.Element {
     };
   }, [hasMore, loading, initialLoading, page, products.length]);
 
-  // ==================== FILTERED PRODUCTS ====================
-  const filteredProducts = useMemo(() => {
-    let filtered = products;
-    if (filterType === "active") {
-      filtered = filtered.filter((p) => p.isActive);
-    } else if (filterType === "inactive") {
-      filtered = filtered.filter((p) => !p.isActive);
-    }
-    return filtered;
-  }, [products, filterType]);
-
   // ==================== HELPERS ====================
-  const getCategoryName = (id: string): string =>
-    categories.find((c) => c.id === id)?.name ?? "—";
-  const getBrandName = (id: string): string =>
-    brands.find((b) => b.id === id)?.name ?? "—";
-  const getPackagingType = (id: string): string =>
-    packagings.find((p) => p.id === id)?.type ?? "—";
-
   const getLatestPrice = (product: Product) => {
-    // Prices are ordered from newest to oldest (DESC)
     const latest = product.prices?.[0];
     return {
-      buyPricePerBox: latest?.buyPricePerBox ?? 0,
-      sellPricePerBox: latest?.sellPricePerBox ?? 0,
-      sellPricePerUnit: latest?.sellPricePerUnit ?? 0,
+      buyPricePerBox: Number(latest?.buyPricePerBox) || 0,
+      sellPricePerBox: Number(latest?.sellPricePerBox) || 0,
+      sellPricePerUnit: Number(latest?.sellPricePerUnit) || 0,
       allowLoss: latest?.allowLoss ?? false,
-      priceId: latest?.id,
     };
   };
 
@@ -279,15 +282,13 @@ export default function ProductPage(): JSX.Element {
     setForm({
       name: "",
       description: "",
-      isActive: true,
-      categoryId: "",
       brandId: "",
       packagingId: "",
       unitsPerBox: DEFAULT_UNITS_PER_BOX,
-      allowLoss: false,
       buyPricePerBox: "",
       sellPricePerBox: "",
       sellPricePerUnit: "",
+      allowLoss: false,
     });
     setEditingId(null);
   };
@@ -298,15 +299,13 @@ export default function ProductPage(): JSX.Element {
       setForm({
         name: product.name,
         description: product.description || "",
-        isActive: product.isActive,
-        categoryId: product.categoryId,
         brandId: product.brandId,
         packagingId: product.packagingId,
         unitsPerBox: product.unitsPerBox,
-        allowLoss: latest.allowLoss,
         buyPricePerBox: String(latest.buyPricePerBox),
         sellPricePerBox: String(latest.sellPricePerBox),
         sellPricePerUnit: String(latest.sellPricePerUnit),
+        allowLoss: latest.allowLoss,
       });
       setEditingId(product.id);
     } else {
@@ -317,35 +316,35 @@ export default function ProductPage(): JSX.Element {
 
   // ==================== PRODUCT CRUD ====================
   const handleProductSubmit = async () => {
-    if (!form.name || !form.categoryId || !form.brandId || !form.packagingId) {
+    if (!form.name || !form.brandId || !form.packagingId) {
       toast.error("Please fill all required fields");
       return;
     }
 
-    const payload: any = {
+    const payload = {
       name: form.name,
       description: form.description,
-      categoryId: form.categoryId,
       brandId: form.brandId,
       packagingId: form.packagingId,
       unitsPerBox: form.unitsPerBox,
-      // Note: isActive and allowLoss are not in the backend schema; we may need to add them if required.
-      // For now, we assume the model still has these fields; adjust if the backend changes.
-      isActive: form.isActive,
+      buyPricePerBox: Number(form.buyPricePerBox) || 0,
+      sellPricePerBox: Number(form.sellPricePerBox) || 0,
+      sellPricePerUnit: Number(form.sellPricePerUnit) || 0,
       allowLoss: form.allowLoss,
     };
-
-    // Include price data (the backend expects it on creation)
-    payload.buyPricePerBox = Number(form.buyPricePerBox) || 0;
-    payload.sellPricePerBox = Number(form.sellPricePerBox) || 0;
-    payload.sellPricePerUnit = Number(form.sellPricePerUnit) || 0;
 
     try {
       setLoading(true);
       if (editingId) {
-        // Update product basic info
-        await api.put(`/products/${editingId}`, payload);
-        // If price changed, add a new price version
+        // Update basic info
+        await api.put(`/products/${editingId}`, {
+          name: payload.name,
+          description: payload.description,
+          brandId: payload.brandId,
+          packagingId: payload.packagingId,
+          unitsPerBox: payload.unitsPerBox,
+        });
+        // If price changed, add new price version
         const currentProduct = products.find((p) => p.id === editingId);
         const latest = currentProduct ? getLatestPrice(currentProduct) : null;
         const priceChanged =
@@ -369,43 +368,93 @@ export default function ProductPage(): JSX.Element {
       }
       setFormDialogOpen(false);
       resetProductForm();
-      // Reset and reload
+      // Reset list
       setProducts([]);
       setPage(1);
       setHasMore(true);
-      await fetchProducts(1, true);
-      await fetchSupportingData();
+      fetchProducts(1, true);
+      fetchSupportingData();
     } catch (e) {
       const message =
-        (e as { response?: { data?: { message?: string } } })?.response?.data?.message ||
-        "Failed to save product";
+        (e as { response?: { data?: { message?: string } } })?.response?.data
+          ?.message || "Failed to save product";
       toast.error(message);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDeleteProduct = (id: string) => {
-    // Sonner-based undo delete
-    toast("Product will be deleted", {
-      description: "You have 5 seconds to undo this action.",
-      duration: UNDO_TIMEOUT_SECONDS * 1000,
+  // Step 1: Open confirmation dialog
+  const confirmDeleteProduct = (product: Product) => {
+    setProductToDelete(product);
+    setDeleteAlertOpen(true);
+  };
+
+  // Step 2: After user confirms, start the undo flow
+  const startProductDeletion = async () => {
+    if (!productToDelete) return;
+
+    // Backup product data for undo
+    const backup = { ...productToDelete };
+    setDeletedProductBackup(backup);
+
+    // Remove from UI immediately
+    setProducts((prev) => prev.filter((p) => p.id !== productToDelete.id));
+
+    // Close confirmation dialog
+    setDeleteAlertOpen(false);
+    setProductToDelete(null);
+
+    // Show undo toast (bottom-left) with timer
+    toast("Product deleted", {
+      description: `You can undo this action within ${UNDO_SECONDS} seconds.`,
+      duration: UNDO_SECONDS * 1000,
+      position: "bottom-left",
       action: {
         label: "Undo",
-        onClick: () => {
-          // Cancelled – do nothing
+        onClick: async () => {
+          // Cancel pending delete
+          if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
+          // Restore product
+          if (deletedProductBackup) {
+            try {
+              const latest = getLatestPrice(deletedProductBackup);
+              await api.post("/products", {
+                name: deletedProductBackup.name,
+                description: deletedProductBackup.description,
+                brandId: deletedProductBackup.brandId,
+                packagingId: deletedProductBackup.packagingId,
+                unitsPerBox: deletedProductBackup.unitsPerBox,
+                buyPricePerBox: latest.buyPricePerBox,
+                sellPricePerBox: latest.sellPricePerBox,
+                sellPricePerUnit: latest.sellPricePerUnit,
+                allowLoss: latest.allowLoss,
+              });
+              toast.success("Product restored");
+              // Refresh list
+              setProducts([]);
+              setPage(1);
+              setHasMore(true);
+              fetchProducts(1, true);
+            } catch (e) {
+              toast.error("Failed to restore product");
+            }
+            setDeletedProductBackup(null);
+          }
         },
       },
-      onAutoClose: async () => {
-        try {
-          await api.delete(`/products/${id}`);
-          toast.success("Product deleted");
-          setProducts((prev) => prev.filter((p) => p.id !== id));
-        } catch (e) {
-          toast.error("Failed to delete product");
-        }
-      },
     });
+
+    // Schedule actual deletion after UNDO_SECONDS
+    undoTimeoutRef.current = setTimeout(async () => {
+      try {
+        await api.delete(`/products/${productToDelete.id}`);
+      } catch (e) {
+        // Product may have been restored already – ignore
+      } finally {
+        if (undoTimeoutRef.current) undoTimeoutRef.current = null;
+      }
+    }, UNDO_SECONDS * 1000);
   };
 
   // ==================== ENTITY CRUD ====================
@@ -421,27 +470,37 @@ export default function ProductPage(): JSX.Element {
   };
 
   const resetEntityForm = () => {
-    setEntityForm({ name: "", type: "" });
+    setEntityForm({ name: "", type: "", categoryId: "" });
     setEditingEntityId(null);
   };
 
   const handleEntitySubmit = async () => {
     const endpoint = getEntityEndpoint();
-    const payload =
-      activeEntityTab === "packaging"
-        ? { type: entityForm.type }
-        : { name: entityForm.name };
+    let payload: any;
 
-    if (
-      (activeEntityTab !== "packaging" && !entityForm.name) ||
-      (activeEntityTab === "packaging" && !entityForm.type)
-    ) {
-      toast.error("Name / type is required");
-      return;
+    if (activeEntityTab === "packaging") {
+      if (!entityForm.type) {
+        toast.error("Packaging type is required");
+        return;
+      }
+      // Backend expects { type } and returns { name }
+      payload = { type: entityForm.type };
+    } else if (activeEntityTab === "brand") {
+      if (!entityForm.name || !entityForm.categoryId) {
+        toast.error("Brand name and category are required");
+        return;
+      }
+      payload = { name: entityForm.name, categoryId: entityForm.categoryId };
+    } else {
+      if (!entityForm.name) {
+        toast.error("Category name is required");
+        return;
+      }
+      payload = { name: entityForm.name };
     }
 
     try {
-      setLoading(true);
+      setEntityLoading(true);
       if (editingEntityId) {
         await api.put(`${endpoint}/${editingEntityId}`, payload);
         toast.success(`${activeEntityTab} updated`);
@@ -451,19 +510,25 @@ export default function ProductPage(): JSX.Element {
       }
       resetEntityForm();
       await fetchSupportingData();
-    } catch (e) {
-      toast.error(`Failed to save ${activeEntityTab}`);
+    } catch (e: any) {
+      const msg = e?.response?.data?.message || `Failed to save ${activeEntityTab}`;
+      toast.error(msg);
     } finally {
-      setLoading(false);
+      setEntityLoading(false);
     }
   };
 
   const handleEditEntity = (item: Category | Brand | Packaging) => {
     setEditingEntityId(item.id);
     if (activeEntityTab === "packaging") {
-      setEntityForm({ name: "", type: (item as Packaging).type });
+      // Packaging API returns { name }, we map to form.type for display/update
+      const pkg = item as Packaging;
+      setEntityForm({ name: "", type: pkg.name, categoryId: "" });
+    } else if (activeEntityTab === "brand") {
+      const brand = item as Brand;
+      setEntityForm({ name: brand.name, type: "", categoryId: brand.categoryId });
     } else {
-      setEntityForm({ name: (item as Category | Brand).name, type: "" });
+      setEntityForm({ name: (item as Category).name, type: "", categoryId: "" });
     }
   };
 
@@ -473,11 +538,12 @@ export default function ProductPage(): JSX.Element {
       await api.delete(`${getEntityEndpoint()}/${id}`);
       toast.success(`${activeEntityTab} deleted`);
       await fetchSupportingData();
-    } catch (e) {
-      toast.error(`Failed to delete ${activeEntityTab}`);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || `Failed to delete ${activeEntityTab}`);
     }
   };
 
+  // Filtered entities – safe using .name for packaging
   const filteredEntities = useMemo(() => {
     const searchLower = entitySearch.toLowerCase();
     if (activeEntityTab === "category") {
@@ -485,7 +551,8 @@ export default function ProductPage(): JSX.Element {
     } else if (activeEntityTab === "brand") {
       return brands.filter((b) => b.name.toLowerCase().includes(searchLower));
     } else {
-      return packagings.filter((p) => p.type.toLowerCase().includes(searchLower));
+      // Packaging uses .name
+      return packagings.filter((p) => (p.name || "").toLowerCase().includes(searchLower));
     }
   }, [activeEntityTab, categories, brands, packagings, entitySearch]);
 
@@ -568,31 +635,31 @@ export default function ProductPage(): JSX.Element {
             <Card className="border-l-4 border-l-emerald-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
               <CardContent className="p-4 flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground">Active</p>
+                  <p className="text-sm font-medium text-muted-foreground">Categories</p>
                   <p className="text-3xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
-                    {products.filter((p) => p.isActive).length}
+                    {categories.length}
                   </p>
                 </div>
-                <Tag className="h-8 w-8 text-emerald-500 opacity-80" />
+                <Layers className="h-8 w-8 text-emerald-500 opacity-80" />
               </CardContent>
             </Card>
             <Card className="border-l-4 border-l-amber-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
               <CardContent className="p-4 flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground">Categories</p>
+                  <p className="text-sm font-medium text-muted-foreground">Brands</p>
                   <p className="text-3xl font-bold bg-gradient-to-r from-amber-600 to-orange-600 bg-clip-text text-transparent">
-                    {categories.length}
+                    {brands.length}
                   </p>
                 </div>
-                <Layers className="h-8 w-8 text-amber-500 opacity-80" />
+                <Tag className="h-8 w-8 text-amber-500 opacity-80" />
               </CardContent>
             </Card>
             <Card className="border-l-4 border-l-rose-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
               <CardContent className="p-4 flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground">Brands</p>
+                  <p className="text-sm font-medium text-muted-foreground">Packaging Types</p>
                   <p className="text-3xl font-bold bg-gradient-to-r from-rose-600 to-pink-600 bg-clip-text text-transparent">
-                    {brands.length}
+                    {packagings.length}
                   </p>
                 </div>
                 <Archive className="h-8 w-8 text-rose-500 opacity-80" />
@@ -600,51 +667,14 @@ export default function ProductPage(): JSX.Element {
             </Card>
           </motion.div>
 
-          {/* Filter Bar */}
+          {/* Search Bar */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2">
-              <div className="flex rounded-lg border bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm p-1 shadow-sm">
-                <Button
-                  variant={filterType === "all" ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => setFilterType("all")}
-                  className={cn(
-                    filterType === "all" &&
-                      "bg-gradient-to-r from-indigo-500 to-purple-500 text-white"
-                  )}
-                >
-                  All
-                </Button>
-                <Button
-                  variant={filterType === "active" ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => setFilterType("active")}
-                  className={cn(
-                    filterType === "active" &&
-                      "bg-gradient-to-r from-emerald-500 to-teal-500 text-white"
-                  )}
-                >
-                  Active
-                </Button>
-                <Button
-                  variant={filterType === "inactive" ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => setFilterType("inactive")}
-                  className={cn(
-                    filterType === "inactive" &&
-                      "bg-gradient-to-r from-rose-500 to-pink-500 text-white"
-                  )}
-                >
-                  Inactive
-                </Button>
-              </div>
-              <Badge
-                variant="secondary"
-                className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
-              >
-                {filteredProducts.length} products
-              </Badge>
-            </div>
+            <Badge
+              variant="secondary"
+              className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
+            >
+              {products.length} products
+            </Badge>
             <div className="relative w-full sm:w-72">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -683,14 +713,13 @@ export default function ProductPage(): JSX.Element {
                   <TableHead className="text-right">Buy/Box</TableHead>
                   <TableHead className="text-right">Sell/Box</TableHead>
                   <TableHead className="text-right">Sell/Unit</TableHead>
-                  <TableHead>Status</TableHead>
                   <TableHead className="w-24"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredProducts.length === 0 && !loading ? (
+                {products.length === 0 && !loading ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-32 text-center">
+                    <TableCell colSpan={8} className="h-32 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <Package className="h-12 w-12 text-muted-foreground/50" />
                         <p className="text-muted-foreground">No products found.</p>
@@ -698,19 +727,16 @@ export default function ProductPage(): JSX.Element {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredProducts.map((product, index) => {
+                  products.map((product, index) => {
                     const isExpanded = expandedRows.has(product.id);
-                    const isLast = index === filteredProducts.length - 1;
+                    const isLast = index === products.length - 1;
                     const latest = getLatestPrice(product);
 
                     return (
                       <React.Fragment key={product.id}>
                         <TableRow
                           ref={isLast ? lastProductElementRef : null}
-                          className={cn(
-                            "group cursor-pointer transition-all duration-200 hover:bg-gradient-to-r hover:from-indigo-50/50 hover:to-purple-50/50 dark:hover:from-indigo-950/30 dark:hover:to-purple-950/30",
-                            !product.isActive && "opacity-60"
-                          )}
+                          className="group cursor-pointer transition-all duration-200 hover:bg-gradient-to-r hover:from-indigo-50/50 hover:to-purple-50/50 dark:hover:from-indigo-950/30 dark:hover:to-purple-950/30"
                           onClick={() => toggleRowExpanded(product.id)}
                         >
                           <TableCell>
@@ -730,8 +756,10 @@ export default function ProductPage(): JSX.Element {
                               {product.name}
                             </div>
                           </TableCell>
-                          <TableCell>{getCategoryName(product.categoryId)}</TableCell>
-                          <TableCell>{getBrandName(product.brandId)}</TableCell>
+                          <TableCell>
+                            {product.brand?.category?.name ?? "—"}
+                          </TableCell>
+                          <TableCell>{product.brand?.name ?? "—"}</TableCell>
                           <TableCell className="text-right font-mono text-blue-600">
                             {latest.buyPricePerBox.toFixed(2)} {CURRENCY}
                           </TableCell>
@@ -740,15 +768,6 @@ export default function ProductPage(): JSX.Element {
                           </TableCell>
                           <TableCell className="text-right font-mono text-emerald-600">
                             {latest.sellPricePerUnit.toFixed(2)} {CURRENCY}
-                          </TableCell>
-                          <TableCell>
-                            {product.isActive ? (
-                              <Badge className="bg-gradient-to-r from-emerald-500 to-teal-500 text-white">
-                                Active
-                              </Badge>
-                            ) : (
-                              <Badge variant="secondary">Inactive</Badge>
-                            )}
                           </TableCell>
                           <TableCell>
                             <div className="flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -776,7 +795,7 @@ export default function ProductPage(): JSX.Element {
                                     className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      handleDeleteProduct(product.id);
+                                      confirmDeleteProduct(product);
                                     }}
                                   >
                                     <Trash2 className="h-4 w-4" />
@@ -789,7 +808,7 @@ export default function ProductPage(): JSX.Element {
                         </TableRow>
                         {isExpanded && (
                           <TableRow className="bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800/50 dark:to-slate-900/50">
-                            <TableCell colSpan={9} className="p-0">
+                            <TableCell colSpan={8} className="p-0">
                               <motion.div
                                 initial={{ opacity: 0, height: 0 }}
                                 animate={{ opacity: 1, height: "auto" }}
@@ -808,11 +827,15 @@ export default function ProductPage(): JSX.Element {
                                     </div>
                                     <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-white/50 dark:bg-slate-900/50 rounded-xl p-3 backdrop-blur-sm">
                                       <span className="text-muted-foreground">Units/Box:</span>
-                                      <span className="font-mono font-medium">{product.unitsPerBox}</span>
+                                      <span className="font-mono font-medium">
+                                        {product.unitsPerBox}
+                                      </span>
                                       <span className="text-muted-foreground">Packaging:</span>
-                                      <span className="capitalize">{getPackagingType(product.packagingId)}</span>
+                                      <span className="capitalize">
+                                        {product.packaging?.name ?? "—"}
+                                      </span>
                                       <span className="text-muted-foreground">Allow Loss:</span>
-                                      <span>{product.allowLoss ? "Yes" : "No"}</span>
+                                      <span>{latest.allowLoss ? "Yes" : "No"}</span>
                                       <span className="text-muted-foreground">Created:</span>
                                       <span>
                                         {product.createdAt
@@ -844,7 +867,10 @@ export default function ProductPage(): JSX.Element {
                                           </thead>
                                           <tbody>
                                             {product.prices.map((price) => (
-                                              <tr key={price.id} className="border-t border-slate-100 dark:border-slate-800">
+                                              <tr
+                                                key={price.id}
+                                                className="border-t border-slate-100 dark:border-slate-800"
+                                              >
                                                 <td className="px-3 py-2">
                                                   {new Date(price.startAt).toLocaleDateString()}
                                                 </td>
@@ -854,13 +880,13 @@ export default function ProductPage(): JSX.Element {
                                                     : "Current"}
                                                 </td>
                                                 <td className="px-3 py-2">
-                                                  {price.buyPricePerBox.toFixed(2)} {CURRENCY}
+                                                  {Number(price.buyPricePerBox).toFixed(2)} {CURRENCY}
                                                 </td>
                                                 <td className="px-3 py-2">
-                                                  {price.sellPricePerBox.toFixed(2)} {CURRENCY}
+                                                  {Number(price.sellPricePerBox).toFixed(2)} {CURRENCY}
                                                 </td>
                                                 <td className="px-3 py-2">
-                                                  {price.sellPricePerUnit.toFixed(2)} {CURRENCY}
+                                                  {Number(price.sellPricePerUnit).toFixed(2)} {CURRENCY}
                                                 </td>
                                               </tr>
                                             ))}
@@ -884,7 +910,7 @@ export default function ProductPage(): JSX.Element {
                 )}
                 {loading && (
                   <TableRow>
-                    <TableCell colSpan={9} className="h-20 text-center">
+                    <TableCell colSpan={8} className="h-20 text-center">
                       <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
                     </TableCell>
                   </TableRow>
@@ -902,7 +928,9 @@ export default function ProductPage(): JSX.Element {
                 {editingId ? "Edit Product" : "New Product"}
               </DialogTitle>
               <DialogDescription>
-                {editingId ? "Update product details and pricing" : "Add a new product to the catalog"}
+                {editingId
+                  ? "Update product details and pricing"
+                  : "Add a new product to the catalog"}
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4 md:grid-cols-2">
@@ -923,24 +951,6 @@ export default function ProductPage(): JSX.Element {
                   onChange={(e) => setForm({ ...form, description: e.target.value })}
                   className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
                 />
-              </div>
-              <div className="space-y-2">
-                <Label>Category *</Label>
-                <Select
-                  value={form.categoryId}
-                  onValueChange={(v) => setForm({ ...form, categoryId: v })}
-                >
-                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {categories.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>
-                        {c.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
               </div>
               <div className="space-y-2">
                 <Label>Brand *</Label>
@@ -972,7 +982,7 @@ export default function ProductPage(): JSX.Element {
                   <SelectContent>
                     {packagings.map((p) => (
                       <SelectItem key={p.id} value={p.id}>
-                        {p.type}
+                        {p.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1022,13 +1032,6 @@ export default function ProductPage(): JSX.Element {
               </div>
               <div className="flex items-center gap-2">
                 <Switch
-                  checked={form.isActive}
-                  onCheckedChange={(c) => setForm({ ...form, isActive: c })}
-                />
-                <Label>Active</Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch
                   checked={form.allowLoss}
                   onCheckedChange={(c) => setForm({ ...form, allowLoss: c })}
                 />
@@ -1053,6 +1056,30 @@ export default function ProductPage(): JSX.Element {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Delete Confirmation Dialog (ShadCN AlertDialog) */}
+        <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Product</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to delete{" "}
+                <strong>{productToDelete?.name}</strong>?
+                <br />
+                You will have {UNDO_SECONDS} seconds to undo this action.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={startProductDeletion}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {/* Entity Management Dialog */}
         <Dialog open={entityDialogOpen} onOpenChange={setEntityDialogOpen}>
@@ -1094,7 +1121,6 @@ export default function ProductPage(): JSX.Element {
                 </TabsTrigger>
               </TabsList>
 
-              {/* Shared content for each tab */}
               <div className="space-y-4 py-4">
                 <div className="flex gap-2">
                   <div className="relative flex-1">
@@ -1123,11 +1149,18 @@ export default function ProductPage(): JSX.Element {
                       key={item.id}
                       className="flex items-center justify-between rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm px-3 py-2"
                     >
-                      <span className="capitalize font-medium">
-                        {activeEntityTab === "packaging"
-                          ? (item as Packaging).type
-                          : (item as Category | Brand).name}
-                      </span>
+                      <div className="flex flex-col">
+                        <span className="capitalize font-medium">
+                          {activeEntityTab === "packaging"
+                            ? (item as Packaging).name
+                            : (item as Category | Brand).name}
+                        </span>
+                        {activeEntityTab === "brand" && (
+                          <span className="text-xs text-muted-foreground">
+                            {categories.find((c) => c.id === (item as Brand).categoryId)?.name ?? "—"}
+                          </span>
+                        )}
+                      </div>
                       <div className="flex gap-1">
                         <Button
                           variant="ghost"
@@ -1154,7 +1187,7 @@ export default function ProductPage(): JSX.Element {
                   <Label className="mb-2 block">
                     {editingEntityId ? "Edit" : "Add"} {activeEntityTab}
                   </Label>
-                  <div className="mt-2 flex gap-2">
+                  <div className="mt-2 flex gap-2 items-end">
                     {activeEntityTab === "packaging" ? (
                       <Select
                         value={entityForm.type}
@@ -1169,9 +1202,43 @@ export default function ProductPage(): JSX.Element {
                           <SelectItem value="plastic">Plastic</SelectItem>
                         </SelectContent>
                       </Select>
+                    ) : activeEntityTab === "brand" ? (
+                      <>
+                        <div className="flex-1 space-y-1">
+                          <Label className="text-xs">Name</Label>
+                          <Input
+                            placeholder="Brand name"
+                            value={entityForm.name}
+                            onChange={(e) =>
+                              setEntityForm({ ...entityForm, name: e.target.value })
+                            }
+                            className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                          />
+                        </div>
+                        <div className="flex-1 space-y-1">
+                          <Label className="text-xs">Category</Label>
+                          <Select
+                            value={entityForm.categoryId}
+                            onValueChange={(v) =>
+                              setEntityForm({ ...entityForm, categoryId: v })
+                            }
+                          >
+                            <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                              <SelectValue placeholder="Select category" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {categories.map((c) => (
+                                <SelectItem key={c.id} value={c.id}>
+                                  {c.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </>
                     ) : (
                       <Input
-                        placeholder="Name"
+                        placeholder="Category name"
                         value={entityForm.name}
                         onChange={(e) =>
                           setEntityForm({ ...entityForm, name: e.target.value })
@@ -1181,7 +1248,7 @@ export default function ProductPage(): JSX.Element {
                     )}
                     <Button
                       onClick={handleEntitySubmit}
-                      disabled={loading}
+                      disabled={entityLoading}
                       className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white"
                     >
                       {editingEntityId ? "Update" : "Add"}

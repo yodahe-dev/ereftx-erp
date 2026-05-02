@@ -32,6 +32,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { motion } from "framer-motion";
 import {
   Trash2,
@@ -48,10 +55,12 @@ import { toast } from "sonner";
  * =====================
  * TYPES
  * =====================
+ * Backend returns { id, name, createdAt, updatedAt }
+ * but expects { type } in request body.
  */
 interface Packaging {
   id: string;
-  type: string;
+  name: string;      // ✅ backend returns "name", not "type"
   createdAt?: string;
   updatedAt?: string;
 }
@@ -70,6 +79,7 @@ interface ApiError {
  * =====================
  */
 const UNDO_TIMEOUT_SECONDS = 5;
+const PACKAGING_TYPES = ["bottle", "can", "plastic"];
 
 /**
  * =====================
@@ -78,9 +88,10 @@ const UNDO_TIMEOUT_SECONDS = 5;
  */
 export default function PackagingPage(): JSX.Element {
   const [items, setItems] = useState<Packaging[]>([]);
-  const [name, setName] = useState<string>("");
+  const [selectedType, setSelectedType] = useState<string>("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const [fetching, setFetching] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState<string>("");
 
@@ -98,15 +109,25 @@ export default function PackagingPage(): JSX.Element {
    */
   const fetchPackagings = async (): Promise<void> => {
     try {
+      setFetching(true);
       setError(null);
       const res = await api.get<Packaging[]>("/packagings");
       if (!Array.isArray(res.data)) {
         throw new Error("Invalid API response");
       }
-      setItems(res.data);
+      // Ensure every item has a name (fallback to empty string)
+      const safeData = res.data.map((p) => ({
+        ...p,
+        name: p.name || "",
+      }));
+      setItems(safeData);
     } catch (e: unknown) {
       const err = e as ApiError;
-      setError(err?.response?.data?.message || "Failed to load packagings");
+      const msg = err?.response?.data?.message || "Failed to load packagings";
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setFetching(false);
     }
   };
 
@@ -116,12 +137,12 @@ export default function PackagingPage(): JSX.Element {
 
   /**
    * =====================
-   * FILTER
+   * FILTER (safe)
    * =====================
    */
   const filteredItems = useMemo<Packaging[]>(() => {
     const q = search.toLowerCase();
-    return items.filter((p) => p.type.toLowerCase().includes(q));
+    return items.filter((p) => (p.name || "").toLowerCase().includes(q));
   }, [items, search]);
 
   /**
@@ -130,7 +151,7 @@ export default function PackagingPage(): JSX.Element {
    * =====================
    */
   const resetForm = (): void => {
-    setName("");
+    setSelectedType("");
     setEditingId(null);
   };
 
@@ -145,7 +166,7 @@ export default function PackagingPage(): JSX.Element {
   };
 
   const openEditDialog = (item: Packaging): void => {
-    setName(item.type);
+    setSelectedType(item.name);
     setEditingId(item.id);
     setDialogOpen(true);
   };
@@ -153,6 +174,7 @@ export default function PackagingPage(): JSX.Element {
   const handleDialogClose = (): void => {
     setDialogOpen(false);
     resetForm();
+    setError(null);
   };
 
   /**
@@ -161,9 +183,15 @@ export default function PackagingPage(): JSX.Element {
    * =====================
    */
   const handleSubmit = async (): Promise<void> => {
-    const trimmed = name.trim();
+    const trimmed = selectedType.trim();
     if (!trimmed) {
-      setError("Type is required");
+      setError("Packaging type is required");
+      return;
+    }
+
+    // Validate against allowed enum
+    if (!PACKAGING_TYPES.includes(trimmed.toLowerCase())) {
+      setError(`Invalid type. Allowed: ${PACKAGING_TYPES.join(", ")}`);
       return;
     }
 
@@ -171,7 +199,7 @@ export default function PackagingPage(): JSX.Element {
       setLoading(true);
       setError(null);
 
-      const payload: { type: string } = { type: trimmed };
+      const payload = { type: trimmed.toLowerCase() }; // backend expects { type }
 
       if (editingId) {
         await api.put(`/packagings/${editingId}`, payload);
@@ -185,8 +213,9 @@ export default function PackagingPage(): JSX.Element {
       await fetchPackagings();
     } catch (e: unknown) {
       const err = e as ApiError;
-      setError(err?.response?.data?.message || "Failed to save packaging");
-      toast.error(err?.response?.data?.message || "Failed to save packaging");
+      const msg = err?.response?.data?.message || "Failed to save packaging";
+      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -226,7 +255,7 @@ export default function PackagingPage(): JSX.Element {
       await api.delete(`/packagings/${deleteItemId}`);
       toast.success("Packaging deleted");
       await fetchPackagings();
-    } catch {
+    } catch (err) {
       toast.error("Failed to delete packaging");
     } finally {
       cancelDelete();
@@ -238,6 +267,27 @@ export default function PackagingPage(): JSX.Element {
    * RENDER
    * =====================
    */
+  if (fetching && items.length === 0) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 lg:p-8">
+        <div className="mx-auto max-w-7xl space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="h-8 w-48 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
+              <div className="mt-1 h-4 w-64 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
+            </div>
+            <div className="h-10 w-32 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
+          </div>
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {[...Array(6)].map((_, i) => (
+              <Skeleton key={i} className="h-20 rounded-xl" />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 lg:p-8">
@@ -308,20 +358,14 @@ export default function PackagingPage(): JSX.Element {
             </div>
           </div>
 
-          {error && (
+          {error && !fetching && (
             <div className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive backdrop-blur-sm">
               <span>{error}</span>
             </div>
           )}
 
           {/* Packaging Cards */}
-          {loading && items.length === 0 ? (
-            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-              {[...Array(6)].map((_, i) => (
-                <Skeleton key={i} className="h-20 rounded-xl" />
-              ))}
-            </div>
-          ) : filteredItems.length === 0 ? (
+          {filteredItems.length === 0 && !fetching ? (
             <div className="py-12 text-center">
               <Package className="mx-auto h-12 w-12 text-muted-foreground/50" />
               <p className="mt-2 text-muted-foreground">No packaging types found</p>
@@ -343,8 +387,8 @@ export default function PackagingPage(): JSX.Element {
                           <Box className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                         </div>
                         <div>
-                          <span className="font-medium text-gray-800 dark:text-gray-100">
-                            {item.type}
+                          <span className="font-medium text-gray-800 dark:text-gray-100 capitalize">
+                            {item.name}
                           </span>
                           {item.createdAt && (
                             <p className="text-xs text-muted-foreground">
@@ -405,14 +449,23 @@ export default function PackagingPage(): JSX.Element {
             <div className="space-y-4 py-4">
               <div className="space-y-2">
                 <Label className="text-sm font-medium">Packaging Type *</Label>
-                <Input
-                  placeholder="e.g., Bottle, Can, Plastic"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
-                  autoFocus
-                />
+                <Select
+                  value={selectedType}
+                  onValueChange={setSelectedType}
+                >
+                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                    <SelectValue placeholder="Select a packaging type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PACKAGING_TYPES.map((type) => (
+                      <SelectItem key={type} value={type} className="capitalize">
+                        {type}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
+              {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
             <DialogFooter>
               <Button
