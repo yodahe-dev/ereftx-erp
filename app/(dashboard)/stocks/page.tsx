@@ -1,6 +1,13 @@
 "use client";
 
-import React, { JSX, useEffect, useMemo, useState, useRef, useCallback } from "react";
+import React, {
+  JSX,
+  useEffect,
+  useMemo,
+  useState,
+  useRef,
+  useCallback,
+} from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,13 +85,18 @@ import {
   Clock,
   Pin,
   PinOff,
+  Layers3,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 
-// ==================== TYPES ====================
+/* ========================================================================== */
+/*  TYPES                                                                     */
+/* ========================================================================== */
+
 interface ProductPrice {
   id: string;
   productId: string;
@@ -158,17 +170,11 @@ interface ExchangeForm {
   notes: string;
 }
 
-interface ProductFormData {
-  name: string;
-  description: string;
-  categoryId: string;
-  brandId: string;
-  packagingId: string;
-  unitsPerBox: number;
-  buyPricePerBox: string;
-  sellPricePerBox: string;
-  sellPricePerUnit: string;
-  allowLoss: boolean;
+interface StockFormData {
+  productId: string;
+  boxQuantity: string;
+  singleQuantity: string;
+  containerType: ContainerType;
 }
 
 interface StockHistoryRecord {
@@ -189,7 +195,14 @@ interface StockHistoryRecord {
 type AdjustmentMode = "add" | "subtract" | "set";
 type FilterType = "all" | "box" | "single";
 
-// ==================== CONSTANTS ====================
+interface BulkStockForm {
+  [productId: string]: { boxes: number; singles: number };
+}
+
+/* ========================================================================== */
+/*  CONSTANTS                                                                 */
+/* ========================================================================== */
+
 const STORAGE_FILTER_KEY = "stock-filter-preference";
 const STORAGE_PINNED_FILTER_KEY = "stock-pinned-filter";
 const PRODUCTS_PAGE_LIMIT = 1000;
@@ -198,7 +211,83 @@ const CURRENCY = "ETB";
 const LOW_STOCK_BOX_THRESHOLD = 2;
 const UNDO_SECONDS = 10;
 
+/* ========================================================================== */
+/*  CUSTOM HOOK – COUNTDOWN UNDO TOAST                                         */
+/* ========================================================================== */
+
+function useCountdownUndo() {
+  const toastIdRef = useRef<string | number | null>(null);
+
+  const show = (
+    message: string,
+    description: string,
+    onUndo: () => void,
+    seconds = UNDO_SECONDS
+  ) => {
+    let remaining = seconds;
+
+    toastIdRef.current = toast(message, {
+      description: `${description} (${remaining}s)`,
+      duration: Infinity, // manually dismiss
+      position: "bottom-left",
+      action: {
+        label: "Undo",
+        onClick: () => {
+          if (toastIdRef.current) {
+            toast.dismiss(toastIdRef.current);
+            toastIdRef.current = null;
+          }
+          onUndo();
+        },
+      },
+    });
+
+    const interval = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0 || !toastIdRef.current) {
+        clearInterval(interval);
+        if (toastIdRef.current) {
+          toast.dismiss(toastIdRef.current);
+          toastIdRef.current = null;
+        }
+        return;
+      }
+      toast(message, {
+        id: toastIdRef.current,
+        description: `${description} (${remaining}s)`,
+        duration: Infinity,
+        position: "bottom-left",
+        action: {
+          label: "Undo",
+          onClick: () => {
+            if (toastIdRef.current) {
+              toast.dismiss(toastIdRef.current);
+              toastIdRef.current = null;
+            }
+            clearInterval(interval);
+            onUndo();
+          },
+        },
+      });
+    }, 1000);
+  };
+
+  const dismiss = () => {
+    if (toastIdRef.current) {
+      toast.dismiss(toastIdRef.current);
+      toastIdRef.current = null;
+    }
+  };
+
+  return { show, dismiss };
+}
+
+/* ========================================================================== */
+/*  PAGE COMPONENT                                                            */
+/* ========================================================================== */
+
 export default function StockPage(): JSX.Element {
+  // ---------- Data ----------
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -207,20 +296,23 @@ export default function StockPage(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // ---------- Filters ----------
   const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState<FilterType>("all");
   const [isFilterPinned, setIsFilterPinned] = useState(false);
   const [isClient, setIsClient] = useState(false);
 
+  // ---------- Stock form ----------
   const [formDialogOpen, setFormDialogOpen] = useState(false);
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<StockFormData>({
     productId: "",
     boxQuantity: "",
     singleQuantity: "",
-    containerType: ContainerType.BOX as ContainerType,
+    containerType: ContainerType.BOX,
   });
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  // ---------- Restock ----------
   const [restockDialogOpen, setRestockDialogOpen] = useState(false);
   const [restockStock, setRestockStock] = useState<Stock | null>(null);
   const [restockBoxes, setRestockBoxes] = useState(0);
@@ -229,6 +321,7 @@ export default function StockPage(): JSX.Element {
   const [restockNewBuyPrice, setRestockNewBuyPrice] = useState("");
   const [restockIsFree, setRestockIsFree] = useState(false);
 
+  // ---------- Adjustment ----------
   const [adjustDialogOpen, setAdjustDialogOpen] = useState(false);
   const [adjustStock, setAdjustStock] = useState<Stock | null>(null);
   const [adjustMode, setAdjustMode] = useState<AdjustmentMode>("set");
@@ -237,6 +330,7 @@ export default function StockPage(): JSX.Element {
   const [adjustExactBoxes, setAdjustExactBoxes] = useState(0);
   const [adjustExactSingles, setAdjustExactSingles] = useState(0);
 
+  // ---------- Exchange ----------
   const [exchangeDialogOpen, setExchangeDialogOpen] = useState(false);
   const [exchangeForm, setExchangeForm] = useState<ExchangeForm>({
     sourceProductId: "",
@@ -247,13 +341,14 @@ export default function StockPage(): JSX.Element {
   });
   const [exchangeLoading, setExchangeLoading] = useState(false);
 
+  // ---------- Entity manager ----------
   const [entityDialogOpen, setEntityDialogOpen] = useState(false);
   const [activeEntityTab, setActiveEntityTab] = useState<
     "products" | "category" | "brand" | "packaging"
   >("products");
   const [entitySearch, setEntitySearch] = useState("");
 
-  const [productForm, setProductForm] = useState<ProductFormData>({
+  const [productForm, setProductForm] = useState({
     name: "",
     description: "",
     categoryId: "",
@@ -267,9 +362,9 @@ export default function StockPage(): JSX.Element {
   });
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
 
+  // ---------- History ----------
   const [priceHistoryDialogOpen, setPriceHistoryDialogOpen] = useState(false);
   const [selectedProductForHistory, setSelectedProductForHistory] = useState<Product | null>(null);
-
   const [stockHistoryDialogOpen, setStockHistoryDialogOpen] = useState(false);
   const [selectedStockForHistory, setSelectedStockForHistory] = useState<Stock | null>(null);
   const [stockHistoryRecords, setStockHistoryRecords] = useState<StockHistoryRecord[]>([]);
@@ -278,8 +373,10 @@ export default function StockPage(): JSX.Element {
   const [entityForm, setEntityForm] = useState({ name: "", type: "" });
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
 
+  // ---------- Expandable rows ----------
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
+  // ---------- Stats ----------
   const [stats, setStats] = useState({
     totalProducts: 0,
     totalBoxes: 0,
@@ -289,13 +386,23 @@ export default function StockPage(): JSX.Element {
     totalInventoryValue: 0,
   });
 
-  // Delete with undo
+  // ---------- Delete + Undo ----------
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
   const [deleteStock, setDeleteStock] = useState<Stock | null>(null);
   const [deletedStockBackup, setDeletedStockBackup] = useState<Stock | null>(null);
   const undoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const { show: showUndo, dismiss: dismissUndo } = useCountdownUndo();
 
-  // ==================== LOCALSTORAGE SYNC ====================
+  // ---------- Bulk Stock Creation ----------
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [bulkSelectedProductIds, setBulkSelectedProductIds] = useState<Set<string>>(new Set());
+  const [bulkQuantities, setBulkQuantities] = useState<BulkStockForm>({});
+  const [bulkDefaultBoxes, setBulkDefaultBoxes] = useState(0);
+  const [bulkDefaultSingles, setBulkDefaultSingles] = useState(0);
+  const [bulkSearch, setBulkSearch] = useState("");
+  const [bulkLoading, setBulkLoading] = useState(false);
+
+  // ---------- Local storage ----------
   useEffect(() => {
     setIsClient(true);
     const pinned = localStorage.getItem(STORAGE_PINNED_FILTER_KEY);
@@ -320,8 +427,11 @@ export default function StockPage(): JSX.Element {
     }
   }, [filterType, isFilterPinned, isClient]);
 
-  // ==================== FETCH ALL PRODUCTS (paginated) ====================
-  const fetchAllProducts = async (): Promise<Product[]> => {
+  /* ========================================================================
+     FETCH ALL PRODUCTS (paginated)
+     ======================================================================== */
+
+  const fetchAllProducts = useCallback(async (): Promise<Product[]> => {
     try {
       let allProducts: Product[] = [];
       let currentPage = 1;
@@ -342,19 +452,22 @@ export default function StockPage(): JSX.Element {
             currentPriceId: latestPrice?.id,
           };
         });
-        allProducts = [...allProducts, ...productsWithPrice];
+        allProducts = allProducts.concat(productsWithPrice);
         hasMore = more;
         currentPage++;
       }
       return allProducts;
-    } catch (error) {
-      console.error("Failed to fetch products:", error);
+    } catch (e) {
+      console.error("Failed to fetch products:", e);
       return [];
     }
-  };
+  }, []);
 
-  // ==================== FETCH ALL DATA ====================
-  const fetchAll = async (): Promise<void> => {
+  /* ========================================================================
+     FETCH ALL DATA
+     ======================================================================== */
+
+  const fetchAll = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -403,19 +516,22 @@ export default function StockPage(): JSX.Element {
         totalInventoryValue: totalValue,
       });
     } catch (e) {
-      const message = (e as any)?.response?.data?.message || "Failed to load data";
+      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Failed to load data";
       setError(message);
       toast.error(message);
     } finally {
       setLoading(false);
     }
-  };
+  }, [fetchAllProducts]);
 
   useEffect(() => {
     fetchAll();
-  }, []);
+  }, [fetchAll]);
 
-  // ==================== FILTERED STOCKS ====================
+  /* ========================================================================
+     FILTERED STOCKS
+     ======================================================================== */
+
   const filteredStocks = useMemo(() => {
     let filtered = stocks;
     filtered = filtered.filter((s) =>
@@ -429,15 +545,24 @@ export default function StockPage(): JSX.Element {
     return filtered;
   }, [stocks, search, filterType]);
 
-  // ==================== HELPERS ====================
-  const getCategoryName = (id: string): string =>
-    categories.find((c) => c.id === id)?.name ?? "—";
-  const getBrandName = (id: string): string =>
-    brands.find((b) => b.id === id)?.name ?? "—";
-  const getPackagingName = (id: string): string =>
-    packagings.find((p) => p.id === id)?.name ?? "—";
+  /* ========================================================================
+     HELPERS
+     ======================================================================== */
 
-  const calculateStockProfit = (stock: Stock) => {
+  const getCategoryName = useCallback(
+    (id: string): string => categories.find((c) => c.id === id)?.name ?? "—",
+    [categories]
+  );
+  const getBrandName = useCallback(
+    (id: string): string => brands.find((b) => b.id === id)?.name ?? "—",
+    [brands]
+  );
+  const getPackagingName = useCallback(
+    (id: string): string => packagings.find((p) => p.id === id)?.name ?? "—",
+    [packagings]
+  );
+
+  const calculateStockProfit = useCallback((stock: Stock) => {
     const product = stock.product;
     if (
       !product ||
@@ -476,9 +601,17 @@ export default function StockPage(): JSX.Element {
       totalRevenue,
       totalProfit,
     };
-  };
+  }, []);
 
-  // ==================== STOCK HISTORY ====================
+  const productHasStock = useCallback(
+    (productId: string) => stocks.some((s) => s.productId === productId),
+    [stocks]
+  );
+
+  /* ========================================================================
+     STOCK HISTORY
+     ======================================================================== */
+
   const fetchStockHistory = async (productId: string) => {
     try {
       setHistoryLoading(true);
@@ -497,7 +630,10 @@ export default function StockPage(): JSX.Element {
     setStockHistoryDialogOpen(true);
   };
 
-  // ==================== STOCK CRUD ====================
+  /* ========================================================================
+     STOCK CRUD
+     ======================================================================== */
+
   const resetStockForm = () => {
     setForm({
       productId: "",
@@ -529,7 +665,7 @@ export default function StockPage(): JSX.Element {
   ) => {
     const num = Number(value) || 0;
     const product = products.find((p) => p.id === form.productId);
-    const unitsPerBox = product?.unitsPerBox || 1;
+    const unitsPerBox = product?.unitsPerBox || DEFAULT_UNITS_PER_BOX;
     if (field === "boxQuantity") {
       setForm((prev) => ({
         ...prev,
@@ -553,7 +689,7 @@ export default function StockPage(): JSX.Element {
 
   const handleStockContainerTypeChange = (type: ContainerType) => {
     const product = products.find((p) => p.id === form.productId);
-    const unitsPerBox = product?.unitsPerBox || 1;
+    const unitsPerBox = product?.unitsPerBox || DEFAULT_UNITS_PER_BOX;
     const boxNum = Number(form.boxQuantity) || 0;
     const singleNum = Number(form.singleQuantity) || 0;
     if (type === ContainerType.BOX) {
@@ -583,16 +719,19 @@ export default function StockPage(): JSX.Element {
       return;
     }
 
-    let payload: any = {
+    const boxQty = Number(form.boxQuantity) || 0;
+    const singleQty = Number(form.singleQuantity) || 0;
+
+    const payload: { productId: string; containerType: ContainerType; boxQuantity?: number; singleQuantity?: number } = {
       productId: form.productId,
       containerType: form.containerType,
     };
 
     if (form.containerType === ContainerType.BOX) {
-      payload.boxQuantity = Number(form.boxQuantity) || 0;
+      payload.boxQuantity = boxQty;
       payload.singleQuantity = 0;
     } else {
-      payload.singleQuantity = Number(form.singleQuantity) || 0;
+      payload.singleQuantity = singleQty;
       payload.boxQuantity = 0;
     }
 
@@ -608,14 +747,18 @@ export default function StockPage(): JSX.Element {
       setFormDialogOpen(false);
       resetStockForm();
       await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Failed to save stock");
+    } catch (e) {
+      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Failed to save stock";
+      toast.error(message);
     } finally {
       setLoading(false);
     }
   };
 
-  // ==================== DELETE WITH UNDO ====================
+  /* ========================================================================
+     DELETE WITH LIVE UNDO COUNTDOWN
+     ======================================================================== */
+
   const confirmDelete = (stock: Stock) => {
     setDeleteStock(stock);
     setDeleteAlertOpen(true);
@@ -627,57 +770,159 @@ export default function StockPage(): JSX.Element {
     const backup = { ...deleteStock };
     setDeletedStockBackup(backup);
 
+    // Optimistic removal
     setStocks((prev) => prev.filter((s) => s.id !== deleteStock.id));
-    // Update stats locally (rough)
-    setStats(prev => ({
+    setStats((prev) => ({
       ...prev,
       totalBoxes: prev.totalBoxes - deleteStock.boxQuantity,
       totalSingles: prev.totalSingles - deleteStock.singleQuantity,
-      lowStockItems: prev.lowStockItems - ((deleteStock.boxQuantity === 0 && deleteStock.singleQuantity === 0) ? 1 : 0),
+      lowStockItems:
+        prev.lowStockItems -
+        (deleteStock.boxQuantity === 0 && deleteStock.singleQuantity === 0 ? 1 : 0),
     }));
 
     setDeleteAlertOpen(false);
     setDeleteStock(null);
 
-    toast("Stock entry deleted", {
-      description: `You have ${UNDO_SECONDS} seconds to undo this action.`,
-      duration: UNDO_SECONDS * 1000,
-      position: "bottom-left",
-      action: {
-        label: "Undo",
-        onClick: async () => {
-          if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
-          if (deletedStockBackup) {
-            try {
-              await api.post("/stocks", {
-                productId: deletedStockBackup.productId,
-                boxQuantity: deletedStockBackup.boxQuantity,
-                singleQuantity: deletedStockBackup.singleQuantity,
-                containerType: deletedStockBackup.containerType,
-              });
-              toast.success("Stock restored");
-              await fetchAll();
-            } catch (e) {
-              toast.error("Failed to restore stock");
-            }
-            setDeletedStockBackup(null);
-          }
-        },
-      },
-    });
-
+    // Schedule permanent deletion
     undoTimeoutRef.current = setTimeout(async () => {
       try {
         await api.delete(`/stocks/${deleteStock.id}`);
       } catch (e) {
         // ignore
       } finally {
-        if (undoTimeoutRef.current) undoTimeoutRef.current = null;
+        undoTimeoutRef.current = null;
       }
     }, UNDO_SECONDS * 1000);
+
+    // Show undo toast with live countdown
+    showUndo("Stock entry deleted", "You can undo this action", async () => {
+      // Undo: cancel timeout & restore entry
+      if (undoTimeoutRef.current) {
+        clearTimeout(undoTimeoutRef.current);
+        undoTimeoutRef.current = null;
+      }
+      if (deletedStockBackup) {
+        try {
+          await api.post("/stocks", {
+            productId: deletedStockBackup.productId,
+            boxQuantity: deletedStockBackup.boxQuantity,
+            singleQuantity: deletedStockBackup.singleQuantity,
+            containerType: deletedStockBackup.containerType,
+          });
+          toast.success("Stock restored");
+          await fetchAll();
+        } catch (e) {
+          toast.error("Failed to restore stock");
+        }
+        setDeletedStockBackup(null);
+      }
+    }, UNDO_SECONDS);
   };
 
-  // ==================== RESTOCK ====================
+  /* ========================================================================
+     BULK CREATE STOCK ENTRIES
+     ======================================================================== */
+
+  const productsWithoutStock = useMemo(() => {
+    return products.filter((p) => !productHasStock(p.id));
+  }, [products, productHasStock]);
+
+  const filteredBulkProducts = useMemo(() => {
+    if (!bulkSearch) return productsWithoutStock;
+    return productsWithoutStock.filter((p) =>
+      p.name.toLowerCase().includes(bulkSearch.toLowerCase())
+    );
+  }, [productsWithoutStock, bulkSearch]);
+
+  const openBulkDialog = () => {
+    setBulkSelectedProductIds(new Set());
+    setBulkQuantities({});
+    setBulkDefaultBoxes(0);
+    setBulkDefaultSingles(0);
+    setBulkSearch("");
+    setBulkDialogOpen(true);
+  };
+
+  const toggleBulkProduct = (productId: string) => {
+    setBulkSelectedProductIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(productId)) {
+        next.delete(productId);
+        // Also remove from quantities
+        setBulkQuantities((prevQ) => {
+          const { [productId]: _, ...rest } = prevQ;
+          return rest;
+        });
+      } else {
+        next.add(productId);
+        // Initialize with default values
+        setBulkQuantities((prevQ) => ({
+          ...prevQ,
+          [productId]: { boxes: bulkDefaultBoxes, singles: bulkDefaultSingles },
+        }));
+      }
+      return next;
+    });
+  };
+
+  const applyDefaultToAllSelected = () => {
+    const updated: BulkStockForm = {};
+    for (const id of bulkSelectedProductIds) {
+      updated[id] = { boxes: bulkDefaultBoxes, singles: bulkDefaultSingles };
+    }
+    setBulkQuantities(updated);
+  };
+
+  const updateBulkQuantity = (productId: string, field: "boxes" | "singles", value: number) => {
+    setBulkQuantities((prev) => ({
+      ...prev,
+      [productId]: {
+        ...prev[productId],
+        [field]: Math.max(0, value),
+      },
+    }));
+  };
+
+  const handleBulkCreate = async () => {
+    if (bulkSelectedProductIds.size === 0) {
+      toast.error("Select at least one product");
+      return;
+    }
+
+    setBulkLoading(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    const promises = Array.from(bulkSelectedProductIds).map(async (productId) => {
+      const qty = bulkQuantities[productId] || { boxes: 0, singles: 0 };
+      try {
+        await api.post("/stocks", {
+          productId,
+          boxQuantity: qty.boxes,
+          singleQuantity: qty.singles,
+          containerType: ContainerType.BOX, // default container type for bulk
+        });
+        successCount++;
+      } catch (e) {
+        failCount++;
+      }
+    });
+
+    await Promise.all(promises);
+
+    if (successCount) toast.success(`${successCount} stock entries created`);
+    if (failCount) toast.error(`${failCount} entries failed`);
+
+    setBulkLoading(false);
+    setBulkDialogOpen(false);
+    await fetchAll();
+  };
+
+  /* ========================================================================
+     RESTOCK
+     ======================================================================== */
+
   const openRestockDialog = (stock: Stock) => {
     setRestockStock(stock);
     setRestockBoxes(0);
@@ -696,7 +941,7 @@ export default function StockPage(): JSX.Element {
     }
     try {
       setLoading(true);
-      const payload: any = {
+      const payload: Record<string, unknown> = {
         addBoxes: restockBoxes,
         addSingles: restockSingles,
         notes: restockNotes || "Manual restock",
@@ -709,14 +954,18 @@ export default function StockPage(): JSX.Element {
       toast.success(`Restocked ${restockBoxes} boxes and ${restockSingles} singles`);
       setRestockDialogOpen(false);
       await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Restock failed");
+    } catch (e) {
+      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Restock failed";
+      toast.error(message);
     } finally {
       setLoading(false);
     }
   };
 
-  // ==================== ADJUSTMENT ====================
+  /* ========================================================================
+     ADJUSTMENT
+     ======================================================================== */
+
   const openAdjustDialog = (stock: Stock) => {
     setAdjustStock(stock);
     setAdjustMode("set");
@@ -729,22 +978,23 @@ export default function StockPage(): JSX.Element {
 
   const handleAdjustSubmit = async () => {
     if (!adjustStock) return;
+
     let newBoxes = adjustStock.boxQuantity;
     let newSingles = adjustStock.singleQuantity;
+
     if (adjustMode === "add") {
       newBoxes += adjustBoxes;
       newSingles += adjustSingles;
     } else if (adjustMode === "subtract") {
-      newBoxes -= adjustBoxes;
-      newSingles -= adjustSingles;
-      if (newBoxes < 0) newBoxes = 0;
-      if (newSingles < 0) newSingles = 0;
+      newBoxes = Math.max(0, newBoxes - adjustBoxes);
+      newSingles = Math.max(0, newSingles - adjustSingles);
     } else {
       newBoxes = adjustExactBoxes;
       newSingles = adjustExactSingles;
     }
+
     const product = products.find((p) => p.id === adjustStock.productId);
-    const unitsPerBox = product?.unitsPerBox || 1;
+    const unitsPerBox = product?.unitsPerBox || DEFAULT_UNITS_PER_BOX;
     const extraBoxes = Math.floor(newSingles / unitsPerBox);
     newBoxes += extraBoxes;
     newSingles = newSingles % unitsPerBox;
@@ -758,14 +1008,18 @@ export default function StockPage(): JSX.Element {
       toast.success("Stock adjusted successfully");
       setAdjustDialogOpen(false);
       await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Adjustment failed");
+    } catch (e) {
+      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Adjustment failed";
+      toast.error(message);
     } finally {
       setLoading(false);
     }
   };
 
-  // ==================== EXCHANGE ====================
+  /* ========================================================================
+     EXCHANGE
+     ======================================================================== */
+
   const handleExchange = async () => {
     if (!exchangeForm.sourceProductId || !exchangeForm.targetProductId) {
       toast.error("Please select both products");
@@ -798,14 +1052,18 @@ export default function StockPage(): JSX.Element {
         notes: "",
       });
       await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Exchange failed");
+    } catch (e) {
+      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Exchange failed";
+      toast.error(message);
     } finally {
       setExchangeLoading(false);
     }
   };
 
-  // ==================== PRODUCT CRUD ====================
+  /* ========================================================================
+     PRODUCT CRUD (inside entity dialog)
+     ======================================================================== */
+
   const resetProductForm = () => {
     setProductForm({
       name: "",
@@ -852,6 +1110,7 @@ export default function StockPage(): JSX.Element {
       toast.error("Please fill all required fields");
       return;
     }
+
     const basicPayload = {
       name: productForm.name,
       description: productForm.description || undefined,
@@ -860,12 +1119,14 @@ export default function StockPage(): JSX.Element {
       packagingId: productForm.packagingId,
       unitsPerBox: Number(productForm.unitsPerBox) || DEFAULT_UNITS_PER_BOX,
     };
+
     const pricePayload = {
       buyPricePerBox: Number(productForm.buyPricePerBox) || 0,
       sellPricePerBox: Number(productForm.sellPricePerBox) || 0,
       sellPricePerUnit: Number(productForm.sellPricePerUnit) || 0,
       allowLoss: productForm.allowLoss,
     };
+
     try {
       setLoading(true);
       if (editingProductId) {
@@ -887,8 +1148,9 @@ export default function StockPage(): JSX.Element {
       }
       resetProductForm();
       await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Failed to save product");
+    } catch (e) {
+      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Failed to save product";
+      toast.error(message);
     } finally {
       setLoading(false);
     }
@@ -900,8 +1162,9 @@ export default function StockPage(): JSX.Element {
       await api.delete(`/products/${id}`);
       toast.success("Product deleted");
       await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Failed to delete product");
+    } catch (e) {
+      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Failed to delete product";
+      toast.error(message);
     }
   };
 
@@ -910,7 +1173,10 @@ export default function StockPage(): JSX.Element {
     setPriceHistoryDialogOpen(true);
   };
 
-  // ==================== ENTITY CRUD ====================
+  /* ========================================================================
+     ENTITY CRUD (category/brand/packaging)
+     ======================================================================== */
+
   const getEntityEndpoint = (): string => {
     switch (activeEntityTab) {
       case "category":
@@ -927,10 +1193,12 @@ export default function StockPage(): JSX.Element {
   const handleEntitySubmit = async () => {
     const endpoint = getEntityEndpoint();
     if (!endpoint) return;
+
     const payload =
       activeEntityTab === "packaging"
         ? { type: entityForm.type }
         : { name: entityForm.name };
+
     if (
       (activeEntityTab !== "packaging" && !entityForm.name) ||
       (activeEntityTab === "packaging" && !entityForm.type)
@@ -938,6 +1206,7 @@ export default function StockPage(): JSX.Element {
       toast.error("Name / type is required");
       return;
     }
+
     try {
       setLoading(true);
       if (editingEntityId) {
@@ -977,7 +1246,10 @@ export default function StockPage(): JSX.Element {
     }
   };
 
-  // ---------- Filtered entities (safe) ----------
+  /* ========================================================================
+     ENTITY FILTERS
+     ======================================================================== */
+
   const filteredProducts = useMemo(() => {
     const lower = entitySearch.toLowerCase();
     return products.filter((p) => p.name.toLowerCase().includes(lower));
@@ -1007,14 +1279,15 @@ export default function StockPage(): JSX.Element {
     });
   };
 
-  const productHasStock = (productId: string) =>
-    stocks.some((s) => s.productId === productId);
+  /* ========================================================================
+     RENDER
+     ======================================================================== */
 
-  // ==================== RENDER ====================
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 lg:p-8">
         <div className="mx-auto max-w-7xl space-y-6">
+          {/* Header */}
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1047,6 +1320,14 @@ export default function StockPage(): JSX.Element {
                 <ArrowLeftRight className="mr-2 h-4 w-4" /> Exchange
               </Button>
               <Button
+                variant="outline"
+                size="sm"
+                onClick={openBulkDialog}
+                className="shadow-sm border-emerald-200 dark:border-emerald-800 hover:bg-emerald-50 dark:hover:bg-emerald-950"
+              >
+                <Layers3 className="mr-2 h-4 w-4" /> Bulk Stock
+              </Button>
+              <Button
                 onClick={() => openStockForm()}
                 className="shadow-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white border-0"
               >
@@ -1055,6 +1336,7 @@ export default function StockPage(): JSX.Element {
             </div>
           </motion.div>
 
+          {/* Stats Cards */}
           {loading && !stocks.length ? (
             <div className="grid gap-4 md:grid-cols-6">
               {[...Array(6)].map((_, i) => (
@@ -1165,6 +1447,7 @@ export default function StockPage(): JSX.Element {
             </motion.div>
           )}
 
+          {/* Search & Filter Bar */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
               <div className="flex rounded-lg border bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm p-1 shadow-sm">
@@ -1241,6 +1524,7 @@ export default function StockPage(): JSX.Element {
             </div>
           </div>
 
+          {/* Error banner */}
           <AnimatePresence>
             {error && (
               <motion.div
@@ -1255,6 +1539,7 @@ export default function StockPage(): JSX.Element {
             )}
           </AnimatePresence>
 
+          {/* Stock Table */}
           <Card className="overflow-hidden border-0 shadow-xl bg-white/70 dark:bg-slate-900/70 backdrop-blur-md">
             <Table>
               <TableHeader>
@@ -1273,7 +1558,7 @@ export default function StockPage(): JSX.Element {
               <TableBody>
                 {loading && !filteredStocks.length ? (
                   [...Array(5)].map((_, i) => (
-                    <TableRow key={i}>
+                    <TableRow key={`skeleton-${i}`}>
                       <TableCell colSpan={9}>
                         <Skeleton className="h-12 w-full" />
                       </TableCell>
@@ -1294,7 +1579,7 @@ export default function StockPage(): JSX.Element {
                   filteredStocks.map((stock) => {
                     const isExpanded = expandedRows.has(stock.id);
                     const product = stock.product;
-                    const unitsPerBox = product?.unitsPerBox || 1;
+                    const unitsPerBox = product?.unitsPerBox || DEFAULT_UNITS_PER_BOX;
                     const totalUnits =
                       stock.boxQuantity * unitsPerBox + stock.singleQuantity;
                     const looseSingles = stock.singleQuantity % unitsPerBox;
@@ -1702,6 +1987,10 @@ export default function StockPage(): JSX.Element {
           </Card>
         </div>
 
+        {/* ====================================================================
+             DIALOGS
+             ==================================================================== */}
+
         {/* Delete Confirmation Dialog */}
         <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
           <AlertDialogContent>
@@ -1842,6 +2131,145 @@ export default function StockPage(): JSX.Element {
                 className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white"
               >
                 {editingId ? "Update" : "Create"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Bulk Stock Dialog */}
+        <Dialog open={bulkDialogOpen} onOpenChange={setBulkDialogOpen}>
+          <DialogContent className="min-w-4xl max-h-[85vh] overflow-y-auto border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
+            <DialogHeader>
+              <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
+                Bulk Stock Creation
+              </DialogTitle>
+              <DialogDescription>
+                Add stock entries for multiple products at once. Only products without existing stock are shown.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="relative">
+                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search products..."
+                  value={bulkSearch}
+                  onChange={(e) => setBulkSearch(e.target.value)}
+                  className="pl-8 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                />
+              </div>
+              {filteredBulkProducts.length === 0 ? (
+                <div className="py-8 text-center text-muted-foreground">
+                  All products already have stock, or none match the search.
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm">Select products & set quantities (boxes / singles)</Label>
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1">
+                        <Input
+                          type="number"
+                          min={0}
+                          value={bulkDefaultBoxes}
+                          onChange={(e) => setBulkDefaultBoxes(Number(e.target.value) || 0)}
+                          className="w-16 h-8 text-xs bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        />
+                        <span className="text-xs">Boxes</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Input
+                          type="number"
+                          min={0}
+                          value={bulkDefaultSingles}
+                          onChange={(e) => setBulkDefaultSingles(Number(e.target.value) || 0)}
+                          className="w-16 h-8 text-xs bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        />
+                        <span className="text-xs">Singles</span>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={applyDefaultToAllSelected}>
+                        Apply to All
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {filteredBulkProducts.map((product) => {
+                      const isSelected = bulkSelectedProductIds.has(product.id);
+                      const qty = bulkQuantities[product.id] || { boxes: bulkDefaultBoxes, singles: bulkDefaultSingles };
+                      return (
+                        <div
+                          key={product.id}
+                          className={cn(
+                            "flex items-center gap-3 rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm px-3 py-2 hover:shadow-sm transition-shadow",
+                            isSelected && "ring-2 ring-emerald-300 dark:ring-emerald-700"
+                          )}
+                        >
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 shrink-0"
+                            onClick={() => toggleBulkProduct(product.id)}
+                          >
+                            <CheckCircle2
+                              className={cn(
+                                "h-5 w-5",
+                                isSelected ? "text-emerald-500" : "text-muted-foreground"
+                              )}
+                            />
+                          </Button>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">{product.name}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {product.unitsPerBox} per box | {getCategoryName(product.categoryId)}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Input
+                              type="number"
+                              min={0}
+                              value={qty.boxes}
+                              onChange={(e) =>
+                                updateBulkQuantity(product.id, "boxes", Number(e.target.value) || 0)
+                              }
+                              className="w-16 h-7 text-xs bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                              disabled={!isSelected}
+                            />
+                            <span className="text-xs">Box</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Input
+                              type="number"
+                              min={0}
+                              value={qty.singles}
+                              onChange={(e) =>
+                                updateBulkQuantity(product.id, "singles", Number(e.target.value) || 0)
+                              }
+                              className="w-16 h-7 text-xs bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                              disabled={!isSelected}
+                            />
+                            <span className="text-xs">Single</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setBulkDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleBulkCreate}
+                disabled={bulkLoading || bulkSelectedProductIds.size === 0}
+                className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white"
+              >
+                {bulkLoading ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="mr-2 h-4 w-4" />
+                )}
+                Create {bulkSelectedProductIds.size} Stock Entries
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -2247,7 +2675,7 @@ export default function StockPage(): JSX.Element {
             <div className="max-h-96 overflow-y-auto">
               {historyLoading ? (
                 <div className="py-8 text-center">
-                  <RefreshCw className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
+                  <Loader2 className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
                 </div>
               ) : stockHistoryRecords.length === 0 ? (
                 <p className="text-center text-muted-foreground py-8">
@@ -2597,7 +3025,8 @@ export default function StockPage(): JSX.Element {
                 </div>
               </TabsContent>
 
-              {/* Categories Tab */}
+              {/* Categories Tab (unchanged) */}
+              {/* ... same as provided ... */}
               <TabsContent value="category" className="space-y-4">
                 <div className="relative">
                   <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />

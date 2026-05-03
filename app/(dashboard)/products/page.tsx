@@ -1,6 +1,13 @@
 "use client";
 
-import React, { JSX, useEffect, useMemo, useState, useRef } from "react";
+import React, {
+  JSX,
+  useEffect,
+  useMemo,
+  useState,
+  useRef,
+  useCallback,
+} from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,11 +71,25 @@ import {
   Tag,
   Layers,
   Archive,
+  Lock,
+  Unlock,
+  ChevronDown,
+  CheckSquare,
+  Square,
+  ClipboardList,
 } from "lucide-react";
 import { toast } from "sonner";
-import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from "@/components/ui/command";
 
-// ==================== TYPES ====================
+/* ========================================================================== */
+/*  TYPES                                                                     */
+/* ========================================================================== */
+
 interface ProductPrice {
   id: string;
   productId: string;
@@ -92,10 +113,9 @@ interface Brand {
   category?: Category;
 }
 
-// Backend Packaging model uses "name", not "type"
 interface Packaging {
   id: string;
-  name: string;        // e.g., "bottle", "can", "plastic"
+  name: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -114,21 +134,182 @@ interface Product {
   };
   packaging?: {
     id: string;
-    name: string;      // backend returns "name"
+    name: string;
   };
   prices?: ProductPrice[];
   createdAt?: string;
   updatedAt?: string;
 }
 
-// ==================== CONSTANTS ====================
+/* ========================================================================== */
+/*  CONSTANTS                                                                 */
+/* ========================================================================== */
+
 const DEFAULT_UNITS_PER_BOX = 24;
 const CURRENCY = "ETB";
 const PRODUCTS_PAGE_SIZE = 20;
 const UNDO_SECONDS = 10;
 
+/* ========================================================================== */
+/*  TYPE GUARDS                                                               */
+/* ========================================================================== */
+
+function isCategory(entity: Category | Brand | Packaging): entity is Category {
+  return "name" in entity && !("categoryId" in entity) && !("category" in entity);
+}
+
+function isBrand(entity: Category | Brand | Packaging): entity is Brand {
+  return "name" in entity && "categoryId" in entity && "category" in entity;
+}
+
+function isPackaging(entity: Category | Brand | Packaging): entity is Packaging {
+  return "name" in entity && !("categoryId" in entity) && !("category" in entity);
+}
+
+/* ========================================================================== */
+/*  HELPERS                                                                   */
+/* ========================================================================== */
+
+const getPackagingDisplayName = (pkg: Packaging): string => {
+  return pkg?.name ?? "";
+};
+
+/* ========================================================================== */
+/*  CUSTOM HOOK – DYNAMIC UNDO COUNTDOWN IN TOAST                             */
+/* ========================================================================== */
+
+function useUndoToast() {
+  const toastIdRef = useRef<string | number | null>(null);
+
+  const showUndoToast = (
+    message: string,
+    description: string,
+    onUndo: () => void,
+    seconds: number,
+  ) => {
+    toastIdRef.current = toast(message, {
+      description: `${description} (${seconds}s)`,
+      duration: seconds * 1000,
+      position: "bottom-left",
+      action: {
+        label: "Undo",
+        onClick: () => {
+          if (toastIdRef.current) toast.dismiss(toastIdRef.current);
+          onUndo();
+        },
+      },
+    });
+
+    let remaining = seconds;
+    const interval = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0 || !toastIdRef.current) {
+        clearInterval(interval);
+        return;
+      }
+      toast(message, {
+        id: toastIdRef.current,
+        description: `${description} (${remaining}s)`,
+        duration: (remaining + 1) * 1000,
+        position: "bottom-left",
+        action: {
+          label: "Undo",
+          onClick: () => {
+            if (toastIdRef.current) toast.dismiss(toastIdRef.current);
+            clearInterval(interval);
+            onUndo();
+          },
+        },
+      });
+    }, 1000);
+  };
+
+  const dismissToast = () => {
+    if (toastIdRef.current) {
+      toast.dismiss(toastIdRef.current);
+      toastIdRef.current = null;
+    }
+  };
+
+  return { showUndoToast, dismissToast };
+}
+
+/* ========================================================================== */
+/*  INLINE SEARCHABLE BRAND SELECT                                            */
+/* ========================================================================== */
+
+interface SearchableBrandSelectProps {
+  value: string;
+  onChange: (value: string) => void;
+  brands: Brand[];
+}
+
+function SearchableBrandSelect({ value, onChange, brands }: SearchableBrandSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const filtered = useMemo(() => {
+    if (!search) return brands;
+    return brands.filter((b) =>
+      b.name.toLowerCase().includes(search.toLowerCase())
+    );
+  }, [brands, search]);
+
+  const selectedBrand = brands.find((b) => b.id === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+        >
+          {selectedBrand ? selectedBrand.name : "Select brand..."}
+          <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+        <Command>
+          <CommandInput
+            placeholder="Search brand..."
+            value={search}
+            onValueChange={setSearch}
+          />
+          <CommandEmpty>No brand found.</CommandEmpty>
+          <CommandGroup className="max-h-60 overflow-auto">
+            {filtered.map((brand) => (
+              <CommandItem
+                key={brand.id}
+                value={brand.name}
+                onSelect={() => {
+                  onChange(brand.id);
+                  setOpen(false);
+                  setSearch("");
+                }}
+              >
+                {brand.name}
+                {brand.category && (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    ({brand.category.name})
+                  </span>
+                )}
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/* ========================================================================== */
+/*  PAGE COMPONENT                                                            */
+/* ========================================================================== */
+
 export default function ProductPage(): JSX.Element {
-  // ---------- Data states ----------
+  // Data states
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
@@ -140,10 +321,11 @@ export default function ProductPage(): JSX.Element {
   const [hasMore, setHasMore] = useState(true);
   const [page, setPage] = useState(1);
 
-  // ---------- UI filters ----------
+  // Filters
   const [search, setSearch] = useState("");
+  const [brandFilter, setBrandFilter] = useState<string>("all");
 
-  // ---------- Product form dialog ----------
+  // Product form
   const [formDialogOpen, setFormDialogOpen] = useState(false);
   const [form, setForm] = useState({
     name: "",
@@ -154,21 +336,20 @@ export default function ProductPage(): JSX.Element {
     buyPricePerBox: "",
     sellPricePerBox: "",
     sellPricePerUnit: "",
-    allowLoss: false,
+    allowLoss: true,
   });
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [lockPrices, setLockPrices] = useState(true);
 
-  // ---------- Delete confirmation ----------
+  // Delete + undo
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
-  const [deletedProductBackup, setDeletedProductBackup] = useState<Product | null>(null);
   const undoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const { showUndoToast, dismissToast } = useUndoToast();
 
-  // ---------- Entity management dialog ----------
+  // Entity manager
   const [entityDialogOpen, setEntityDialogOpen] = useState(false);
-  const [activeEntityTab, setActiveEntityTab] = useState<
-    "category" | "brand" | "packaging"
-  >("category");
+  const [activeEntityTab, setActiveEntityTab] = useState<"category" | "brand" | "packaging">("category");
   const [entityForm, setEntityForm] = useState({
     name: "",
     type: "",
@@ -178,65 +359,129 @@ export default function ProductPage(): JSX.Element {
   const [entitySearch, setEntitySearch] = useState("");
   const [entityLoading, setEntityLoading] = useState(false);
 
-  // ---------- Expandable rows ----------
+  // Expandable rows
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
   // Infinite scroll
   const observerRef = useRef<IntersectionObserver | null>(null);
   const lastProductElementRef = useRef<HTMLTableRowElement | null>(null);
 
-  // ==================== FETCH PRODUCTS (PAGINATED) ====================
-  const fetchProducts = async (pageNum: number, reset = false) => {
-    try {
-      setLoading(true);
-      setError(null);
-      const params = new URLSearchParams();
-      params.append("page", pageNum.toString());
-      params.append("limit", PRODUCTS_PAGE_SIZE.toString());
-      if (search) params.append("search", search);
+  // ------------ BULK CREATE FROM BRANDS ------------
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [selectedBrandIds, setSelectedBrandIds] = useState<Set<string>>(new Set());
+  const [batchForm, setBatchForm] = useState({
+    packagingId: "",
+    unitsPerBox: DEFAULT_UNITS_PER_BOX,
+    buyPricePerBox: "",
+    sellPricePerBox: "",
+    sellPricePerUnit: "",
+    allowLoss: true,
+  });
+  // custom name/description per selected brand
+  const [brandCustomizations, setBrandCustomizations] = useState<Map<string, { name: string; description: string }>>(new Map());
+  const [batchLoading, setBatchLoading] = useState(false);
 
-      const response = await api.get<{
-        data: Product[];
-        page: number;
-        hasMore: boolean;
-        total: number;
-      }>(`/products?${params.toString()}`);
-      const { data, hasMore: more, page: currentPage } = response.data;
-      const productsData = Array.isArray(data) ? data : [];
-      setProducts((prev) => (reset ? productsData : [...prev, ...productsData]));
-      setHasMore(more);
-      setPage(currentPage);
-    } catch (e) {
-      const message =
-        (e as { response?: { data?: { message?: string } } })?.response?.data
-          ?.message || "Failed to load products";
-      setError(message);
-      toast.error(message);
-    } finally {
-      setLoading(false);
-      setInitialLoading(false);
+  // Brands that already have a product (based on currently loaded products)
+  const usedBrandIds = useMemo(() => {
+    const ids = new Set<string>();
+    products.forEach((p) => ids.add(p.brandId));
+    return ids;
+  }, [products]);
+
+  // Brands available for batch creation (those not already used)
+  const availableBatchBrands = useMemo(() => {
+    return brands.filter((b) => !usedBrandIds.has(b.id));
+  }, [brands, usedBrandIds]);
+
+  // Initialize default customizations when brands are selected/deselected
+  useEffect(() => {
+    const newMap = new Map(brandCustomizations);
+    let changed = false;
+    // Remove entries for unselected brands
+    for (const [id] of newMap) {
+      if (!selectedBrandIds.has(id)) {
+        newMap.delete(id);
+        changed = true;
+      }
     }
-  };
+    // Add default for newly selected brands
+    for (const id of selectedBrandIds) {
+      if (!newMap.has(id)) {
+        const brand = brands.find((b) => b.id === id);
+        if (brand) {
+          newMap.set(id, {
+            name: brand.name,
+            description: `${brand.name} ${brand.category?.name ?? ""}`.trim(),
+          });
+          changed = true;
+        }
+      }
+    }
+    if (changed) setBrandCustomizations(newMap);
+  }, [selectedBrandIds, brands, brandCustomizations]);
 
-  // ==================== FETCH SUPPORTING DATA ====================
-  const fetchSupportingData = async () => {
+  /* ========================================================================
+     DATA FETCHING
+     ======================================================================== */
+
+  const fetchProducts = useCallback(
+    async (pageNum: number, reset = false) => {
+      try {
+        setLoading(true);
+        setError(null);
+        const params = new URLSearchParams();
+        params.append("page", pageNum.toString());
+        params.append("limit", PRODUCTS_PAGE_SIZE.toString());
+        if (search) params.append("search", search);
+        if (brandFilter !== "all") params.append("brandId", brandFilter);
+
+        const response = await api.get<{
+          data: Product[];
+          page: number;
+          hasMore: boolean;
+          total: number;
+        }>(`/products?${params.toString()}`);
+
+        const { data, hasMore: more, page: currentPage } = response.data;
+        const productsData = Array.isArray(data) ? data : [];
+
+        setProducts((prev) => (reset ? productsData : [...prev, ...productsData]));
+        setHasMore(!!more);
+        setPage(currentPage);
+      } catch (e: unknown) {
+        const message =
+          (e as { response?: { data?: { message?: string } } })?.response?.data
+            ?.message ?? "Failed to load products";
+        setError(message);
+        toast.error(message);
+      } finally {
+        setLoading(false);
+        setInitialLoading(false);
+      }
+    },
+    [search, brandFilter]
+  );
+
+  const fetchSupportingData = useCallback(async () => {
     try {
-      const [c, b, pkg] = await Promise.all([
+      const [cRes, bRes, pkgRes] = await Promise.all([
         api.get<Category[]>("/categories"),
         api.get<Brand[]>("/brands"),
         api.get<Packaging[]>("/packagings"),
       ]);
-      setCategories(Array.isArray(c.data) ? c.data : []);
-      setBrands(Array.isArray(b.data) ? b.data : []);
-      setPackagings(Array.isArray(pkg.data) ? pkg.data : []);
+      setCategories(Array.isArray(cRes.data) ? cRes.data : []);
+      setBrands(Array.isArray(bRes.data) ? bRes.data : []);
+      setPackagings(Array.isArray(pkgRes.data) ? pkgRes.data : []);
     } catch (e) {
       console.error("Failed to fetch supporting data", e);
+      toast.error("Could not load categories, brands, or packaging types");
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchProducts(1, true);
     fetchSupportingData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -244,7 +489,7 @@ export default function ProductPage(): JSX.Element {
     setPage(1);
     setHasMore(true);
     fetchProducts(1, true);
-  }, [search]);
+  }, [search, brandFilter, fetchProducts]);
 
   useEffect(() => {
     if (observerRef.current) observerRef.current.disconnect();
@@ -265,9 +510,12 @@ export default function ProductPage(): JSX.Element {
     return () => {
       if (observerRef.current) observerRef.current.disconnect();
     };
-  }, [hasMore, loading, initialLoading, page, products.length]);
+  }, [hasMore, loading, initialLoading, page, fetchProducts]);
 
-  // ==================== HELPERS ====================
+  /* ========================================================================
+     HELPERS
+     ======================================================================== */
+
   const getLatestPrice = (product: Product) => {
     const latest = product.prices?.[0];
     return {
@@ -278,17 +526,33 @@ export default function ProductPage(): JSX.Element {
     };
   };
 
-  const resetProductForm = () => {
+  const getDefaultPackagingId = (): string => {
+    if (packagings.length > 0) return packagings[0].id;
+    return "";
+  };
+
+  const resetProductForm = (keepPrices = false) => {
+    const prevPrices = keepPrices
+      ? {
+          buyPricePerBox: form.buyPricePerBox,
+          sellPricePerBox: form.sellPricePerBox,
+          sellPricePerUnit: form.sellPricePerUnit,
+          allowLoss: form.allowLoss,
+        }
+      : {
+          buyPricePerBox: "",
+          sellPricePerBox: "",
+          sellPricePerUnit: "",
+          allowLoss: true,
+        };
+
     setForm({
       name: "",
       description: "",
       brandId: "",
-      packagingId: "",
+      packagingId: getDefaultPackagingId(),
       unitsPerBox: DEFAULT_UNITS_PER_BOX,
-      buyPricePerBox: "",
-      sellPricePerBox: "",
-      sellPricePerUnit: "",
-      allowLoss: false,
+      ...prevPrices,
     });
     setEditingId(null);
   };
@@ -309,12 +573,15 @@ export default function ProductPage(): JSX.Element {
       });
       setEditingId(product.id);
     } else {
-      resetProductForm();
+      resetProductForm(false);
     }
     setFormDialogOpen(true);
   };
 
-  // ==================== PRODUCT CRUD ====================
+  /* ========================================================================
+     PRODUCT CRUD
+     ======================================================================== */
+
   const handleProductSubmit = async () => {
     if (!form.name || !form.brandId || !form.packagingId) {
       toast.error("Please fill all required fields");
@@ -336,7 +603,6 @@ export default function ProductPage(): JSX.Element {
     try {
       setLoading(true);
       if (editingId) {
-        // Update basic info
         await api.put(`/products/${editingId}`, {
           name: payload.name,
           description: payload.description,
@@ -344,7 +610,6 @@ export default function ProductPage(): JSX.Element {
           packagingId: payload.packagingId,
           unitsPerBox: payload.unitsPerBox,
         });
-        // If price changed, add new price version
         const currentProduct = products.find((p) => p.id === editingId);
         const latest = currentProduct ? getLatestPrice(currentProduct) : null;
         const priceChanged =
@@ -362,102 +627,178 @@ export default function ProductPage(): JSX.Element {
           });
         }
         toast.success("Product updated");
+        setFormDialogOpen(false);
+        resetProductForm(false);
+        setProducts([]);
+        setPage(1);
+        setHasMore(true);
+        fetchProducts(1, true);
       } else {
         await api.post("/products", payload);
         toast.success("Product created");
+        if (!lockPrices) {
+          setFormDialogOpen(false);
+          resetProductForm(false);
+        } else {
+          resetProductForm(true);
+        }
+        setProducts([]);
+        setPage(1);
+        setHasMore(true);
+        fetchProducts(1, true);
       }
-      setFormDialogOpen(false);
-      resetProductForm();
-      // Reset list
-      setProducts([]);
-      setPage(1);
-      setHasMore(true);
-      fetchProducts(1, true);
       fetchSupportingData();
     } catch (e) {
       const message =
         (e as { response?: { data?: { message?: string } } })?.response?.data
-          ?.message || "Failed to save product";
+          ?.message ?? "Failed to save product";
       toast.error(message);
     } finally {
       setLoading(false);
     }
   };
 
-  // Step 1: Open confirmation dialog
   const confirmDeleteProduct = (product: Product) => {
     setProductToDelete(product);
     setDeleteAlertOpen(true);
   };
 
-  // Step 2: After user confirms, start the undo flow
-  const startProductDeletion = async () => {
+  const executeDeletion = () => {
     if (!productToDelete) return;
-
-    // Backup product data for undo
     const backup = { ...productToDelete };
-    setDeletedProductBackup(backup);
+    const idToDelete = productToDelete.id;
 
-    // Remove from UI immediately
-    setProducts((prev) => prev.filter((p) => p.id !== productToDelete.id));
-
-    // Close confirmation dialog
+    setProducts((prev) => prev.filter((p) => p.id !== idToDelete));
     setDeleteAlertOpen(false);
     setProductToDelete(null);
 
-    // Show undo toast (bottom-left) with timer
-    toast("Product deleted", {
-      description: `You can undo this action within ${UNDO_SECONDS} seconds.`,
-      duration: UNDO_SECONDS * 1000,
-      position: "bottom-left",
-      action: {
-        label: "Undo",
-        onClick: async () => {
-          // Cancel pending delete
-          if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
-          // Restore product
-          if (deletedProductBackup) {
-            try {
-              const latest = getLatestPrice(deletedProductBackup);
-              await api.post("/products", {
-                name: deletedProductBackup.name,
-                description: deletedProductBackup.description,
-                brandId: deletedProductBackup.brandId,
-                packagingId: deletedProductBackup.packagingId,
-                unitsPerBox: deletedProductBackup.unitsPerBox,
-                buyPricePerBox: latest.buyPricePerBox,
-                sellPricePerBox: latest.sellPricePerBox,
-                sellPricePerUnit: latest.sellPricePerUnit,
-                allowLoss: latest.allowLoss,
-              });
-              toast.success("Product restored");
-              // Refresh list
-              setProducts([]);
-              setPage(1);
-              setHasMore(true);
-              fetchProducts(1, true);
-            } catch (e) {
-              toast.error("Failed to restore product");
-            }
-            setDeletedProductBackup(null);
-          }
-        },
+    showUndoToast(
+      "Product deleted",
+      `Undo within ${UNDO_SECONDS}s`,
+      () => {
+        setProducts((prev) => [backup, ...prev]);
+        dismissToast();
+        if (undoTimeoutRef.current) {
+          clearTimeout(undoTimeoutRef.current);
+          undoTimeoutRef.current = null;
+        }
       },
-    });
+      UNDO_SECONDS
+    );
 
-    // Schedule actual deletion after UNDO_SECONDS
     undoTimeoutRef.current = setTimeout(async () => {
       try {
-        await api.delete(`/products/${productToDelete.id}`);
-      } catch (e) {
-        // Product may have been restored already – ignore
-      } finally {
-        if (undoTimeoutRef.current) undoTimeoutRef.current = null;
+        await api.delete(`/products/${idToDelete}`);
+      } catch {
+        // ignore
       }
+      undoTimeoutRef.current = null;
     }, UNDO_SECONDS * 1000);
   };
 
-  // ==================== ENTITY CRUD ====================
+  /* ========================================================================
+     BULK CREATE FROM BRANDS
+     ======================================================================== */
+
+  const toggleBrandSelection = (brandId: string) => {
+    setSelectedBrandIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(brandId)) next.delete(brandId);
+      else next.add(brandId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedBrandIds.size === availableBatchBrands.length) {
+      setSelectedBrandIds(new Set());
+    } else {
+      setSelectedBrandIds(new Set(availableBatchBrands.map((b) => b.id)));
+    }
+  };
+
+  const updateCustomName = (brandId: string, name: string) => {
+    setBrandCustomizations((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(brandId) || { name: "", description: "" };
+      next.set(brandId, { ...existing, name });
+      return next;
+    });
+  };
+
+  const updateCustomDescription = (brandId: string, description: string) => {
+    setBrandCustomizations((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(brandId) || { name: "", description: "" };
+      next.set(brandId, { ...existing, description });
+      return next;
+    });
+  };
+
+  const handleBatchCreate = async () => {
+    if (!batchForm.packagingId) {
+      toast.error("Please select a packaging type");
+      return;
+    }
+    if (selectedBrandIds.size === 0) {
+      toast.error("Select at least one brand");
+      return;
+    }
+
+    const payload = {
+      packagingId: batchForm.packagingId,
+      unitsPerBox: batchForm.unitsPerBox,
+      buyPricePerBox: Number(batchForm.buyPricePerBox) || 0,
+      sellPricePerBox: Number(batchForm.sellPricePerBox) || 0,
+      sellPricePerUnit: Number(batchForm.sellPricePerUnit) || 0,
+      allowLoss: batchForm.allowLoss,
+    };
+
+    setBatchLoading(true);
+    let created = 0;
+    let failed = 0;
+
+    const ids = Array.from(selectedBrandIds);
+    for (const brandId of ids) {
+      const custom = brandCustomizations.get(brandId);
+      const productName = custom?.name || brands.find((b) => b.id === brandId)?.name || "Unnamed";
+      const productDescription = custom?.description || "";
+
+      try {
+        await api.post("/products", {
+          name: productName,
+          description: productDescription,
+          brandId,
+          ...payload,
+        });
+        created++;
+      } catch (e) {
+        failed++;
+      }
+    }
+
+    if (created > 0) {
+      toast.success(`${created} product${created > 1 ? "s" : ""} created`);
+    }
+    if (failed > 0) {
+      toast.error(`${failed} product${failed > 1 ? "s" : ""} failed`);
+    }
+
+    setBatchLoading(false);
+    setBatchOpen(false);
+    setSelectedBrandIds(new Set());
+    setBrandCustomizations(new Map());
+    setProducts([]);
+    setPage(1);
+    setHasMore(true);
+    fetchProducts(1, true);
+    fetchSupportingData();
+  };
+
+  /* ========================================================================
+     ENTITY CRUD
+     ======================================================================== */
+
   const getEntityEndpoint = (): string => {
     switch (activeEntityTab) {
       case "category":
@@ -476,27 +817,26 @@ export default function ProductPage(): JSX.Element {
 
   const handleEntitySubmit = async () => {
     const endpoint = getEntityEndpoint();
-    let payload: any;
+    let payload: Record<string, string | number>;
 
     if (activeEntityTab === "packaging") {
       if (!entityForm.type) {
         toast.error("Packaging type is required");
         return;
       }
-      // Backend expects { type } and returns { name }
-      payload = { type: entityForm.type };
+      payload = { type: entityForm.type.trim().toLowerCase() };
     } else if (activeEntityTab === "brand") {
       if (!entityForm.name || !entityForm.categoryId) {
         toast.error("Brand name and category are required");
         return;
       }
-      payload = { name: entityForm.name, categoryId: entityForm.categoryId };
+      payload = { name: entityForm.name.trim(), categoryId: entityForm.categoryId };
     } else {
       if (!entityForm.name) {
         toast.error("Category name is required");
         return;
       }
-      payload = { name: entityForm.name };
+      payload = { name: entityForm.name.trim() };
     }
 
     try {
@@ -510,25 +850,24 @@ export default function ProductPage(): JSX.Element {
       }
       resetEntityForm();
       await fetchSupportingData();
-    } catch (e: any) {
-      const msg = e?.response?.data?.message || `Failed to save ${activeEntityTab}`;
+    } catch (e: unknown) {
+      const msg =
+        (e as { response?: { data?: { message?: string } } })?.response?.data
+          ?.message ?? `Failed to save ${activeEntityTab}`;
       toast.error(msg);
     } finally {
       setEntityLoading(false);
     }
   };
 
-  const handleEditEntity = (item: Category | Brand | Packaging) => {
-    setEditingEntityId(item.id);
-    if (activeEntityTab === "packaging") {
-      // Packaging API returns { name }, we map to form.type for display/update
-      const pkg = item as Packaging;
-      setEntityForm({ name: "", type: pkg.name, categoryId: "" });
-    } else if (activeEntityTab === "brand") {
-      const brand = item as Brand;
-      setEntityForm({ name: brand.name, type: "", categoryId: brand.categoryId });
+  const handleEditEntity = (entity: Category | Brand | Packaging) => {
+    setEditingEntityId(entity.id);
+    if (isPackaging(entity)) {
+      setEntityForm({ name: "", type: entity.name, categoryId: "" });
+    } else if (isBrand(entity)) {
+      setEntityForm({ name: entity.name, type: "", categoryId: entity.categoryId });
     } else {
-      setEntityForm({ name: (item as Category).name, type: "", categoryId: "" });
+      setEntityForm({ name: (entity as Category).name, type: "", categoryId: "" });
     }
   };
 
@@ -538,22 +877,25 @@ export default function ProductPage(): JSX.Element {
       await api.delete(`${getEntityEndpoint()}/${id}`);
       toast.success(`${activeEntityTab} deleted`);
       await fetchSupportingData();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || `Failed to delete ${activeEntityTab}`);
+    } catch (e: unknown) {
+      const msg =
+        (e as { response?: { data?: { message?: string } } })?.response?.data
+          ?.message ?? `Failed to delete ${activeEntityTab}`;
+      toast.error(msg);
     }
   };
 
-  // Filtered entities – safe using .name for packaging
   const filteredEntities = useMemo(() => {
     const searchLower = entitySearch.toLowerCase();
     if (activeEntityTab === "category") {
       return categories.filter((c) => c.name.toLowerCase().includes(searchLower));
-    } else if (activeEntityTab === "brand") {
-      return brands.filter((b) => b.name.toLowerCase().includes(searchLower));
-    } else {
-      // Packaging uses .name
-      return packagings.filter((p) => (p.name || "").toLowerCase().includes(searchLower));
     }
+    if (activeEntityTab === "brand") {
+      return brands.filter((b) => b.name.toLowerCase().includes(searchLower));
+    }
+    return packagings.filter((p) =>
+      getPackagingDisplayName(p).toLowerCase().includes(searchLower)
+    );
   }, [activeEntityTab, categories, brands, packagings, entitySearch]);
 
   const toggleRowExpanded = (id: string) => {
@@ -565,7 +907,16 @@ export default function ProductPage(): JSX.Element {
     });
   };
 
-  // ==================== RENDER ====================
+  const safePackagingName = (product: Product): string => {
+    if (product.packaging?.name) return product.packaging.name;
+    const found = packagings.find((p) => p.id === product.packagingId);
+    return found ? getPackagingDisplayName(found) : "—";
+  };
+
+  /* ========================================================================
+     RENDER
+     ======================================================================== */
+
   if (initialLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-white dark:from-slate-950 dark:to-slate-900">
@@ -604,6 +955,26 @@ export default function ProductPage(): JSX.Element {
                 className="shadow-sm border-indigo-200 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-950"
               >
                 <Settings className="mr-2 h-4 w-4" /> Manage Entities
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setBatchOpen(true);
+                  setSelectedBrandIds(new Set());
+                  setBrandCustomizations(new Map());
+                  setBatchForm({
+                    packagingId: getDefaultPackagingId(),
+                    unitsPerBox: DEFAULT_UNITS_PER_BOX,
+                    buyPricePerBox: "",
+                    sellPricePerBox: "",
+                    sellPricePerUnit: "",
+                    allowLoss: true,
+                  });
+                }}
+                className="shadow-sm border-indigo-200 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-950"
+              >
+                <ClipboardList className="mr-2 h-4 w-4" /> Batch Create
               </Button>
               <Button
                 onClick={() => openProductForm()}
@@ -667,14 +1038,21 @@ export default function ProductPage(): JSX.Element {
             </Card>
           </motion.div>
 
-          {/* Search Bar */}
+          {/* Search & Brand Filter */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <Badge
-              variant="secondary"
-              className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
-            >
-              {products.length} products
-            </Badge>
+            <div className="flex items-center gap-2">
+              <Badge
+                variant="secondary"
+                className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
+              >
+                {products.length} products
+              </Badge>
+              <SearchableBrandSelect
+                value={brandFilter}
+                onChange={setBrandFilter}
+                brands={[{ id: "all", name: "All brands", categoryId: "" }, ...brands]}
+              />
+            </div>
             <div className="relative w-full sm:w-72">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -832,7 +1210,7 @@ export default function ProductPage(): JSX.Element {
                                       </span>
                                       <span className="text-muted-foreground">Packaging:</span>
                                       <span className="capitalize">
-                                        {product.packaging?.name ?? "—"}
+                                        {safePackagingName(product)}
                                       </span>
                                       <span className="text-muted-foreground">Allow Loss:</span>
                                       <span>{latest.allowLoss ? "Yes" : "No"}</span>
@@ -954,21 +1332,11 @@ export default function ProductPage(): JSX.Element {
               </div>
               <div className="space-y-2">
                 <Label>Brand *</Label>
-                <Select
+                <SearchableBrandSelect
                   value={form.brandId}
-                  onValueChange={(v) => setForm({ ...form, brandId: v })}
-                >
-                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {brands.map((b) => (
-                      <SelectItem key={b.id} value={b.id}>
-                        {b.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  onChange={(v) => setForm({ ...form, brandId: v })}
+                  brands={brands}
+                />
               </div>
               <div className="space-y-2">
                 <Label>Packaging *</Label>
@@ -980,11 +1348,17 @@ export default function ProductPage(): JSX.Element {
                     <SelectValue placeholder="Select" />
                   </SelectTrigger>
                   <SelectContent>
-                    {packagings.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name}
-                      </SelectItem>
-                    ))}
+                    {packagings.length === 0 ? (
+                      <div className="px-2 py-1 text-sm text-muted-foreground">
+                        No packaging types available
+                      </div>
+                    ) : (
+                      packagings.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {getPackagingDisplayName(p)}
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
               </div>
@@ -1037,6 +1411,19 @@ export default function ProductPage(): JSX.Element {
                 />
                 <Label>Allow selling below cost</Label>
               </div>
+              {!editingId && (
+                <div className="flex items-center gap-2">
+                  <Switch checked={lockPrices} onCheckedChange={setLockPrices} />
+                  <Label className="flex items-center gap-1">
+                    {lockPrices ? (
+                      <Lock className="h-3 w-3" />
+                    ) : (
+                      <Unlock className="h-3 w-3" />
+                    )}
+                    Quick‑add (keep prices)
+                  </Label>
+                </div>
+              )}
             </div>
             <DialogFooter>
               <Button
@@ -1057,22 +1444,21 @@ export default function ProductPage(): JSX.Element {
           </DialogContent>
         </Dialog>
 
-        {/* Delete Confirmation Dialog (ShadCN AlertDialog) */}
+        {/* Delete Confirmation */}
         <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Delete Product</AlertDialogTitle>
               <AlertDialogDescription>
-                Are you sure you want to delete{" "}
-                <strong>{productToDelete?.name}</strong>?
+                Are you sure you want to delete <strong>{productToDelete?.name}</strong>?
                 <br />
-                You will have {UNDO_SECONDS} seconds to undo this action.
+                You will have {UNDO_SECONDS} seconds to undo.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
-                onClick={startProductDeletion}
+                onClick={executeDeletion}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
                 Delete
@@ -1080,6 +1466,166 @@ export default function ProductPage(): JSX.Element {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* Batch Create Dialog */}
+        <Dialog open={batchOpen} onOpenChange={setBatchOpen}>
+          <DialogContent className="max-w-2xl border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
+            <DialogHeader>
+              <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+                Batch Create from Brands
+              </DialogTitle>
+              <DialogDescription>
+                Select brands and set common pricing. Product names = brand name, descriptions = brand + category name (customisable).
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4 max-h-[70vh] overflow-y-auto">
+              <div className="flex items-center justify-between">
+                <Label>Available Brands ({availableBatchBrands.length})</Label>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={toggleSelectAll}
+                  className="text-xs"
+                >
+                  {selectedBrandIds.size === availableBatchBrands.length ? "Deselect All" : "Select All"}
+                </Button>
+              </div>
+              {availableBatchBrands.length === 0 ? (
+                <p className="text-muted-foreground text-sm">All brands already have a product.</p>
+              ) : (
+                <div className="border rounded-lg max-h-60 overflow-auto">
+                  {availableBatchBrands.map((brand) => {
+                    const isSelected = selectedBrandIds.has(brand.id);
+                    const custom = brandCustomizations.get(brand.id) || { name: brand.name, description: `${brand.name} ${brand.category?.name ?? ""}` };
+                    return (
+                      <div
+                        key={brand.id}
+                        className={`flex flex-col px-3 py-2 border-b last:border-b-0 ${isSelected ? "bg-indigo-50 dark:bg-indigo-950/30" : ""}`}
+                      >
+                        <div className="flex items-center gap-2 cursor-pointer" onClick={() => toggleBrandSelection(brand.id)}>
+                          {isSelected ? (
+                            <CheckSquare className="h-4 w-4 text-indigo-600" />
+                          ) : (
+                            <Square className="h-4 w-4 text-muted-foreground" />
+                          )}
+                          <span className="font-medium">{brand.name}</span>
+                          <span className="text-xs text-muted-foreground ml-auto">
+                            {brand.category?.name || "—"}
+                          </span>
+                        </div>
+                        {isSelected && (
+                          <div className="mt-2 ml-6 grid grid-cols-2 gap-2">
+                            <div>
+                              <Label className="text-xs">Product Name</Label>
+                              <Input
+                                value={custom.name}
+                                onChange={(e) => updateCustomName(brand.id, e.target.value)}
+                                className="h-7 text-xs"
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs">Description</Label>
+                              <Input
+                                value={custom.description}
+                                onChange={(e) => updateCustomDescription(brand.id, e.target.value)}
+                                className="h-7 text-xs"
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <div className="space-y-2">
+                  <Label className="text-xs">Packaging *</Label>
+                  <Select
+                    value={batchForm.packagingId}
+                    onValueChange={(v) => setBatchForm({ ...batchForm, packagingId: v })}
+                  >
+                    <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm h-9">
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {packagings.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {getPackagingDisplayName(p)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Units per Box</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={batchForm.unitsPerBox}
+                    onChange={(e) => setBatchForm({ ...batchForm, unitsPerBox: Number(e.target.value) || 1 })}
+                    className="h-9 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Buy Price/Box ({CURRENCY})</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={batchForm.buyPricePerBox}
+                    onChange={(e) => setBatchForm({ ...batchForm, buyPricePerBox: e.target.value })}
+                    className="h-9 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Sell Price/Box ({CURRENCY})</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={batchForm.sellPricePerBox}
+                    onChange={(e) => setBatchForm({ ...batchForm, sellPricePerBox: e.target.value })}
+                    className="h-9 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs">Sell Price/Unit ({CURRENCY})</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={batchForm.sellPricePerUnit}
+                    onChange={(e) => setBatchForm({ ...batchForm, sellPricePerUnit: e.target.value })}
+                    className="h-9 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                  />
+                </div>
+                <div className="flex items-center gap-2 pt-4">
+                  <Switch
+                    checked={batchForm.allowLoss}
+                    onCheckedChange={(c) => setBatchForm({ ...batchForm, allowLoss: c })}
+                  />
+                  <Label className="text-xs">Allow loss</Label>
+                </div>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setBatchOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleBatchCreate}
+                disabled={batchLoading || selectedBrandIds.size === 0}
+                className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white"
+              >
+                {batchLoading ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="mr-2 h-4 w-4" />
+                )}
+                Create {selectedBrandIds.size} Product{selectedBrandIds.size !== 1 && "s"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Entity Management Dialog */}
         <Dialog open={entityDialogOpen} onOpenChange={setEntityDialogOpen}>
@@ -1144,43 +1690,49 @@ export default function ProductPage(): JSX.Element {
                 </div>
 
                 <div className="max-h-80 space-y-1 overflow-y-auto">
-                  {filteredEntities.map((item: Category | Brand | Packaging) => (
-                    <div
-                      key={item.id}
-                      className="flex items-center justify-between rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm px-3 py-2"
-                    >
-                      <div className="flex flex-col">
-                        <span className="capitalize font-medium">
-                          {activeEntityTab === "packaging"
-                            ? (item as Packaging).name
-                            : (item as Category | Brand).name}
-                        </span>
-                        {activeEntityTab === "brand" && (
-                          <span className="text-xs text-muted-foreground">
-                            {categories.find((c) => c.id === (item as Brand).categoryId)?.name ?? "—"}
+                  {filteredEntities.length === 0 ? (
+                    <p className="text-center text-muted-foreground py-4">
+                      No {activeEntityTab}s found.
+                    </p>
+                  ) : (
+                    filteredEntities.map((entity) => (
+                      <div
+                        key={entity.id}
+                        className="flex items-center justify-between rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm px-3 py-2"
+                      >
+                        <div className="flex flex-col">
+                          <span className="capitalize font-medium">
+                            {isPackaging(entity)
+                              ? getPackagingDisplayName(entity)
+                              : (entity as Category | Brand).name}
                           </span>
-                        )}
+                          {isBrand(entity) && (
+                            <span className="text-xs text-muted-foreground">
+                              {categories.find((c) => c.id === entity.categoryId)?.name ?? "—"}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
+                            onClick={() => handleEditEntity(entity)}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
+                            onClick={() => handleDeleteEntity(entity.id)}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="flex gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
-                          onClick={() => handleEditEntity(item)}
-                        >
-                          <Pencil className="h-3 w-3" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
-                          onClick={() => handleDeleteEntity(item.id)}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
 
                 <div className="border-t pt-4">
