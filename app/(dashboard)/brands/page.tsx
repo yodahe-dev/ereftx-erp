@@ -1,6 +1,6 @@
 "use client";
 
-import { JSX, useEffect, useMemo, useState } from "react";
+import { JSX, useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,8 +48,20 @@ import {
   Sparkles,
   Tag,
   Package,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
+import { cn } from "@/lib/utils";
 
 /**
  * =====================
@@ -65,10 +77,18 @@ interface Brand {
   id: string;
   name: string;
   categoryId: string;
+  createdAt?: string;
   category?: {
     id: string;
     name: string;
   };
+}
+
+interface PaginationMeta {
+  totalItems: number;
+  totalPages: number;
+  currentPage: number;
+  limit: number;
 }
 
 interface ApiError {
@@ -85,6 +105,7 @@ interface ApiError {
  * =====================
  */
 const UNDO_SECONDS = 10;
+const DEFAULT_PAGE_LIMIT = 12;
 
 /**
  * =====================
@@ -94,42 +115,67 @@ const UNDO_SECONDS = 10;
 export default function BrandPage(): JSX.Element {
   const [brands, setBrands] = useState<Brand[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [name, setName] = useState<string>("");
-  const [categoryId, setCategoryId] = useState<string>("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(true);
   const [search, setSearch] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
+  // Pagination meta
+  const [meta, setMeta] = useState<PaginationMeta>({
+    totalItems: 0,
+    totalPages: 1,
+    currentPage: 1,
+    limit: DEFAULT_PAGE_LIMIT,
+  });
+
   // Dialogs
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [formName, setFormName] = useState<string>("");
+  const [formCategoryId, setFormCategoryId] = useState<string>("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState<boolean>(false);
+
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
   const [deleteBrandId, setDeleteBrandId] = useState<string | null>(null);
   const [deletedBrand, setDeletedBrand] = useState<Brand | null>(null);
 
+  // Debounce search
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   /**
    * =====================
-   * FETCH DATA
+   * FETCH BRANDS (server‑side pagination & search)
    * =====================
    */
-  const fetchBrands = async (): Promise<void> => {
+  const fetchBrands = useCallback(async (page = 1, searchTerm = search) => {
     try {
+      setLoading(true);
       setError(null);
-      const res = await api.get<Brand[]>("/brands");
-      if (!Array.isArray(res.data)) {
-        throw new Error("Invalid API response");
-      }
-      setBrands(res.data);
+      const res = await api.get<{ data: Brand[]; meta: PaginationMeta }>(
+        `/brands?page=${page}&limit=${meta.limit}&search=${encodeURIComponent(searchTerm)}`
+      );
+      setBrands(res.data.data);
+      setMeta(res.data.meta);
     } catch (e: unknown) {
       const err = e as ApiError;
-      setError(err?.response?.data?.message || "Failed to load brands");
+      const msg = err?.response?.data?.message || "Failed to load brands";
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setLoading(false);
     }
-  };
+  }, [meta.limit, search]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * =====================
+   * FETCH CATEGORIES (unchanged)
+   * =====================
+   */
   const fetchCategories = async (): Promise<void> => {
     try {
-      const res = await api.get<Category[]>("/categories");
-      if (Array.isArray(res.data)) {
+      const res = await api.get<{ data: Category[] }>("/categories");
+      if (Array.isArray(res.data.data)) {
+        setCategories(res.data.data);
+      } else if (Array.isArray(res.data)) {
         setCategories(res.data);
       }
     } catch (e) {
@@ -137,81 +183,61 @@ export default function BrandPage(): JSX.Element {
     }
   };
 
+  // Initial load
   useEffect(() => {
-    void fetchBrands();
-    void fetchCategories();
-  }, []);
+    fetchBrands(1);
+    fetchCategories();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounced search – triggers server fetch
+  useEffect(() => {
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(() => {
+      fetchBrands(1, search);
+    }, 400);
+    return () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    };
+  }, [search, fetchBrands]);
 
   /**
    * =====================
-   * FILTER
-   * =====================
-   */
-  const filteredBrands = useMemo<Brand[]>(() => {
-    const q = search.toLowerCase();
-    return brands.filter((b) => b.name.toLowerCase().includes(q));
-  }, [brands, search]);
-
-  /**
-   * =====================
-   * RESET FORM
+   * FORM LOGIC
    * =====================
    */
   const resetForm = (): void => {
-    setName("");
-    setCategoryId("");
+    setFormName("");
+    setFormCategoryId("");
     setEditingId(null);
   };
 
-  /**
-   * =====================
-   * OPEN DIALOG
-   * =====================
-   */
   const openCreateDialog = (): void => {
     resetForm();
     setDialogOpen(true);
   };
 
   const openEditDialog = (brand: Brand): void => {
-    setName(brand.name);
-    setCategoryId(brand.categoryId);
+    setFormName(brand.name);
+    setFormCategoryId(brand.categoryId);
     setEditingId(brand.id);
     setDialogOpen(true);
   };
 
-  const handleDialogClose = (): void => {
-    setDialogOpen(false);
-    resetForm();
-  };
-
-  /**
-   * =====================
-   * SUBMIT
-   * =====================
-   */
   const handleSubmit = async (): Promise<void> => {
-    const trimmed = name.trim();
-
-    if (!trimmed) {
+    const name = formName.trim();
+    if (!name) {
       setError("Brand name is required");
       return;
     }
-
-    if (!categoryId) {
+    if (!formCategoryId) {
       setError("Please select a category");
       return;
     }
 
+    setSubmitting(true);
+    setError(null);
     try {
-      setLoading(true);
-      setError(null);
-
-      const payload = {
-        name: trimmed,
-        categoryId,
-      };
-
+      const payload = { name, categoryId: formCategoryId };
       if (editingId) {
         await api.put(`/brands/${editingId}`, payload);
         toast.success("Brand updated");
@@ -219,15 +245,17 @@ export default function BrandPage(): JSX.Element {
         await api.post("/brands", payload);
         toast.success("Brand created");
       }
-
-      handleDialogClose();
-      await fetchBrands();
+      setDialogOpen(false);
+      resetForm();
+      // Refetch current page
+      await fetchBrands(meta.currentPage);
     } catch (e: unknown) {
       const err = e as ApiError;
-      setError(err?.response?.data?.message || "Failed to save brand");
-      toast.error(err?.response?.data?.message || "Failed to save brand");
+      const msg = err?.response?.data?.message || "Failed to save brand";
+      setError(msg);
+      toast.error(msg);
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
@@ -244,12 +272,11 @@ export default function BrandPage(): JSX.Element {
 
   const confirmDelete = async (): Promise<void> => {
     if (!deleteBrandId || !deletedBrand) return;
-
     try {
       await api.delete(`/brands/${deleteBrandId}`);
-      // Remove from local state immediately
+      // Optimistic remove
       setBrands((prev) => prev.filter((b) => b.id !== deleteBrandId));
-      // Show undo toast
+      setMeta((prev) => ({ ...prev, totalItems: prev.totalItems - 1 }));
       toast("Brand deleted", {
         description: "You can undo this action within 10 seconds.",
         duration: UNDO_SECONDS * 1000,
@@ -258,15 +285,15 @@ export default function BrandPage(): JSX.Element {
           label: "Undo",
           onClick: async () => {
             try {
-              // Re-create the brand with saved data
               await api.post("/brands", {
                 name: deletedBrand.name,
                 categoryId: deletedBrand.categoryId,
               });
               toast.success("Brand restored");
-              await fetchBrands();
+              // Refetch current page to get fresh data
+              await fetchBrands(meta.currentPage);
             } catch (e: any) {
-              toast.error(e?.response?.data?.message || "Failed to undo delete");
+              toast.error(e?.response?.data?.message || "Failed to undo");
             }
           },
         },
@@ -289,6 +316,16 @@ export default function BrandPage(): JSX.Element {
 
   /**
    * =====================
+   * PAGINATION HELPERS
+   * =====================
+   */
+  const handlePageChange = (page: number) => {
+    if (page < 1 || page > meta.totalPages) return;
+    fetchBrands(page, search);
+  };
+
+  /**
+   * =====================
    * RENDER
    * =====================
    */
@@ -296,6 +333,7 @@ export default function BrandPage(): JSX.Element {
     <TooltipProvider>
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 lg:p-8">
         <div className="mx-auto max-w-7xl space-y-6">
+          {/* Header */}
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -307,7 +345,7 @@ export default function BrandPage(): JSX.Element {
               </h1>
               <p className="text-sm text-muted-foreground mt-1 flex items-center gap-1">
                 <Sparkles className="h-3 w-3 text-amber-500" />
-                Manage your product brands
+                Organize your product lines efficiently
               </p>
             </div>
             <Button
@@ -319,7 +357,7 @@ export default function BrandPage(): JSX.Element {
             </Button>
           </motion.div>
 
-          {/* Statistics */}
+          {/* Stats */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -335,7 +373,7 @@ export default function BrandPage(): JSX.Element {
               <CardContent>
                 <div className="flex items-center justify-between">
                   <p className="text-3xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
-                    {brands.length}
+                    {meta.totalItems}
                   </p>
                   <Tag className="h-8 w-8 text-emerald-500 opacity-80" />
                 </div>
@@ -349,7 +387,7 @@ export default function BrandPage(): JSX.Element {
               variant="secondary"
               className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
             >
-              {filteredBrands.length} item{filteredBrands.length !== 1 ? "s" : ""}
+              {meta.totalItems} item{meta.totalItems !== 1 ? "s" : ""}
             </Badge>
             <div className="relative w-full sm:w-72">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -363,83 +401,159 @@ export default function BrandPage(): JSX.Element {
           </div>
 
           {error && (
-            <div className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive backdrop-blur-sm"
+            >
               <span>{error}</span>
-            </div>
+            </motion.div>
           )}
 
-          {/* Brand Cards */}
-          {loading && brands.length === 0 ? (
-            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+          {/* Brand Cards Grid */}
+          {loading ? (
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {[...Array(6)].map((_, i) => (
-                <Skeleton key={i} className="h-20 rounded-xl" />
+                <Skeleton key={i} className="h-24 rounded-xl" />
               ))}
             </div>
-          ) : filteredBrands.length === 0 ? (
-            <div className="py-12 text-center">
-              <Package className="mx-auto h-12 w-12 text-muted-foreground/50" />
-              <p className="mt-2 text-muted-foreground">No brands found</p>
+          ) : brands.length === 0 ? (
+            <div className="py-16 text-center">
+              <Package className="mx-auto h-16 w-16 text-muted-foreground/40" />
+              <p className="mt-4 text-lg text-muted-foreground">
+                {search ? "No brands match your search" : "No brands found"}
+              </p>
+              {!search && (
+                <Button
+                  variant="link"
+                  className="mt-2 text-indigo-600 dark:text-indigo-400"
+                  onClick={openCreateDialog}
+                >
+                  Create your first brand
+                </Button>
+              )}
             </div>
           ) : (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {filteredBrands.map((brand) => (
-                <motion.div
-                  key={brand.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="group"
-                >
-                  <Card className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-0 shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden">
-                    <CardContent className="p-4 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-indigo-100 to-purple-100 dark:from-indigo-900/50 dark:to-purple-900/50 flex items-center justify-center">
-                          <Tag className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+            <>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {brands.map((brand) => (
+                  <motion.div
+                    key={brand.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.25 }}
+                    layout
+                  >
+                    <Card className="group bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-0 shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden">
+                      <CardContent className="p-5 flex items-center justify-between">
+                        <div className="flex items-center gap-4 min-w-0">
+                          <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-indigo-100 to-purple-100 dark:from-indigo-900/50 dark:to-purple-900/50 flex items-center justify-center shrink-0">
+                            <Tag className="h-6 w-6 text-indigo-600 dark:text-indigo-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="font-semibold text-gray-800 dark:text-gray-100 truncate">
+                              {brand.name}
+                            </h3>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              {brand.category ? (
+                                <Badge variant="outline" className="text-xs font-normal">
+                                  {brand.category.name}
+                                </Badge>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">—</span>
+                              )}
+                              {brand.createdAt && (
+                                <span className="text-xs text-muted-foreground hidden sm:inline">
+                                  {new Date(brand.createdAt).toLocaleDateString()}
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        <div>
-                          <span className="font-medium text-gray-800 dark:text-gray-100">
-                            {brand.name}
-                          </span>
-                          {brand.category && (
-                            <p className="text-xs text-muted-foreground">
-                              {brand.category.name}
-                            </p>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
+                                onClick={() => openEditDialog(brand)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Edit</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
+                                onClick={() => initiateDelete(brand)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Delete</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                ))}
+              </div>
+
+              {/* Pagination */}
+              {meta.totalPages > 1 && (
+                <div className="flex items-center justify-center pt-4">
+                  <Pagination>
+                    <PaginationContent>
+                      <PaginationItem>
+                        <PaginationPrevious
+                          onClick={() => handlePageChange(meta.currentPage - 1)}
+                          className={cn(
+                            meta.currentPage === 1 && "pointer-events-none opacity-50"
                           )}
-                        </div>
-                      </div>
-                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
-                              onClick={() => openEditDialog(brand)}
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Edit</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
-                              onClick={() => initiateDelete(brand)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Delete</TooltipContent>
-                        </Tooltip>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
-              ))}
-            </div>
+                        />
+                      </PaginationItem>
+                      {Array.from({ length: meta.totalPages }, (_, i) => i + 1)
+                        .filter(
+                          (page) =>
+                            page === 1 ||
+                            page === meta.totalPages ||
+                            Math.abs(page - meta.currentPage) <= 1
+                        )
+                        .map((page, idx, arr) => (
+                          <div key={page} className="flex items-center">
+                            {idx > 0 && arr[idx - 1] !== page - 1 && (
+                              <PaginationItem>
+                                <span className="px-2 text-muted-foreground">...</span>
+                              </PaginationItem>
+                            )}
+                            <PaginationItem>
+                              <PaginationLink
+                                onClick={() => handlePageChange(page)}
+                                isActive={meta.currentPage === page}
+                              >
+                                {page}
+                              </PaginationLink>
+                            </PaginationItem>
+                          </div>
+                        ))}
+                      <PaginationItem>
+                        <PaginationNext
+                          onClick={() => handlePageChange(meta.currentPage + 1)}
+                          className={cn(
+                            meta.currentPage === meta.totalPages && "pointer-events-none opacity-50"
+                          )}
+                        />
+                      </PaginationItem>
+                    </PaginationContent>
+                  </Pagination>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -448,21 +562,21 @@ export default function BrandPage(): JSX.Element {
           <DialogContent className="max-w-md border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-                {editingId ? "Edit Brand" : "Add Brand"}
+                {editingId ? "Edit Brand" : "Create Brand"}
               </DialogTitle>
               <DialogDescription>
                 {editingId
                   ? "Update the brand details"
-                  : "Create a new product brand"}
+                  : "Add a new brand to your inventory"}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
                 <Label className="text-sm font-medium">Brand Name *</Label>
                 <Input
-                  placeholder="Brand name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g., Coca‑Cola"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
                   className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
                   autoFocus
                 />
@@ -470,8 +584,8 @@ export default function BrandPage(): JSX.Element {
               <div className="space-y-2">
                 <Label className="text-sm font-medium">Category *</Label>
                 <Select
-                  value={categoryId}
-                  onValueChange={(v) => setCategoryId(v)}
+                  value={formCategoryId}
+                  onValueChange={(v) => setFormCategoryId(v)}
                 >
                   <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
                     <SelectValue placeholder="Select a category" />
@@ -489,30 +603,37 @@ export default function BrandPage(): JSX.Element {
             <DialogFooter>
               <Button
                 variant="outline"
-                onClick={handleDialogClose}
+                onClick={() => setDialogOpen(false)}
                 className="border-slate-300 dark:border-slate-700"
+                disabled={submitting}
               >
                 Cancel
               </Button>
               <Button
                 onClick={handleSubmit}
-                disabled={loading}
+                disabled={submitting}
                 className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white"
               >
-                {loading ? "Saving..." : editingId ? "Update" : "Create"}
+                {submitting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : editingId ? (
+                  "Update Brand"
+                ) : (
+                  "Create Brand"
+                )}
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
-        {/* Delete Confirmation (simple yes/no) */}
+        {/* Delete Confirmation */}
         <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Delete Brand</AlertDialogTitle>
               <AlertDialogDescription>
-                This brand will be permanently removed.
-                You can undo this action for 10 seconds after deletion.
+                You are about to permanently delete <strong>{deletedBrand?.name}</strong>.
+                You can undo this action for {UNDO_SECONDS} seconds after confirmation.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -521,7 +642,7 @@ export default function BrandPage(): JSX.Element {
                 onClick={confirmDelete}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
-                Delete Now
+                Delete
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

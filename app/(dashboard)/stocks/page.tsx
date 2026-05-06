@@ -1,13 +1,6 @@
 "use client";
 
-import React, {
-  JSX,
-  useEffect,
-  useMemo,
-  useState,
-  useRef,
-  useCallback,
-} from "react";
+import React, { JSX, useEffect, useMemo, useState, useRef } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -85,18 +78,29 @@ import {
   Clock,
   Pin,
   PinOff,
-  Layers3,
-  Loader2,
+  MoreHorizontal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
 
-/* ========================================================================== */
-/*  TYPES                                                                     */
-/* ========================================================================== */
-
+// ==================== TYPES ====================
 interface ProductPrice {
   id: string;
   productId: string;
@@ -170,11 +174,17 @@ interface ExchangeForm {
   notes: string;
 }
 
-interface StockFormData {
-  productId: string;
-  boxQuantity: string;
-  singleQuantity: string;
-  containerType: ContainerType;
+interface ProductFormData {
+  name: string;
+  description: string;
+  categoryId: string;
+  brandId: string;
+  packagingId: string;
+  unitsPerBox: number;
+  buyPricePerBox: string;
+  sellPricePerBox: string;
+  sellPricePerUnit: string;
+  allowLoss: boolean;
 }
 
 interface StockHistoryRecord {
@@ -195,14 +205,7 @@ interface StockHistoryRecord {
 type AdjustmentMode = "add" | "subtract" | "set";
 type FilterType = "all" | "box" | "single";
 
-interface BulkStockForm {
-  [productId: string]: { boxes: number; singles: number };
-}
-
-/* ========================================================================== */
-/*  CONSTANTS                                                                 */
-/* ========================================================================== */
-
+// ==================== CONSTANTS ====================
 const STORAGE_FILTER_KEY = "stock-filter-preference";
 const STORAGE_PINNED_FILTER_KEY = "stock-pinned-filter";
 const PRODUCTS_PAGE_LIMIT = 1000;
@@ -210,84 +213,10 @@ const DEFAULT_UNITS_PER_BOX = 24;
 const CURRENCY = "ETB";
 const LOW_STOCK_BOX_THRESHOLD = 2;
 const UNDO_SECONDS = 10;
-
-/* ========================================================================== */
-/*  CUSTOM HOOK – COUNTDOWN UNDO TOAST                                         */
-/* ========================================================================== */
-
-function useCountdownUndo() {
-  const toastIdRef = useRef<string | number | null>(null);
-
-  const show = (
-    message: string,
-    description: string,
-    onUndo: () => void,
-    seconds = UNDO_SECONDS
-  ) => {
-    let remaining = seconds;
-
-    toastIdRef.current = toast(message, {
-      description: `${description} (${remaining}s)`,
-      duration: Infinity, // manually dismiss
-      position: "bottom-left",
-      action: {
-        label: "Undo",
-        onClick: () => {
-          if (toastIdRef.current) {
-            toast.dismiss(toastIdRef.current);
-            toastIdRef.current = null;
-          }
-          onUndo();
-        },
-      },
-    });
-
-    const interval = setInterval(() => {
-      remaining -= 1;
-      if (remaining <= 0 || !toastIdRef.current) {
-        clearInterval(interval);
-        if (toastIdRef.current) {
-          toast.dismiss(toastIdRef.current);
-          toastIdRef.current = null;
-        }
-        return;
-      }
-      toast(message, {
-        id: toastIdRef.current,
-        description: `${description} (${remaining}s)`,
-        duration: Infinity,
-        position: "bottom-left",
-        action: {
-          label: "Undo",
-          onClick: () => {
-            if (toastIdRef.current) {
-              toast.dismiss(toastIdRef.current);
-              toastIdRef.current = null;
-            }
-            clearInterval(interval);
-            onUndo();
-          },
-        },
-      });
-    }, 1000);
-  };
-
-  const dismiss = () => {
-    if (toastIdRef.current) {
-      toast.dismiss(toastIdRef.current);
-      toastIdRef.current = null;
-    }
-  };
-
-  return { show, dismiss };
-}
-
-/* ========================================================================== */
-/*  PAGE COMPONENT                                                            */
-/* ========================================================================== */
+const DEFAULT_PAGE_SIZE = 10;
 
 export default function StockPage(): JSX.Element {
-  // ---------- Data ----------
+  // ---------- core state ----------
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -296,23 +225,26 @@ export default function StockPage(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // ---------- Filters ----------
+  // ---------- search / filter ----------
   const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState<FilterType>("all");
   const [isFilterPinned, setIsFilterPinned] = useState(false);
   const [isClient, setIsClient] = useState(false);
 
-  // ---------- Stock form ----------
+  // ---------- pagination ----------
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+
+  // ---------- dialogs & forms ----------
   const [formDialogOpen, setFormDialogOpen] = useState(false);
-  const [form, setForm] = useState<StockFormData>({
+  const [form, setForm] = useState({
     productId: "",
     boxQuantity: "",
     singleQuantity: "",
-    containerType: ContainerType.BOX,
+    containerType: ContainerType.BOX as ContainerType,
   });
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // ---------- Restock ----------
   const [restockDialogOpen, setRestockDialogOpen] = useState(false);
   const [restockStock, setRestockStock] = useState<Stock | null>(null);
   const [restockBoxes, setRestockBoxes] = useState(0);
@@ -321,7 +253,6 @@ export default function StockPage(): JSX.Element {
   const [restockNewBuyPrice, setRestockNewBuyPrice] = useState("");
   const [restockIsFree, setRestockIsFree] = useState(false);
 
-  // ---------- Adjustment ----------
   const [adjustDialogOpen, setAdjustDialogOpen] = useState(false);
   const [adjustStock, setAdjustStock] = useState<Stock | null>(null);
   const [adjustMode, setAdjustMode] = useState<AdjustmentMode>("set");
@@ -330,7 +261,6 @@ export default function StockPage(): JSX.Element {
   const [adjustExactBoxes, setAdjustExactBoxes] = useState(0);
   const [adjustExactSingles, setAdjustExactSingles] = useState(0);
 
-  // ---------- Exchange ----------
   const [exchangeDialogOpen, setExchangeDialogOpen] = useState(false);
   const [exchangeForm, setExchangeForm] = useState<ExchangeForm>({
     sourceProductId: "",
@@ -341,14 +271,13 @@ export default function StockPage(): JSX.Element {
   });
   const [exchangeLoading, setExchangeLoading] = useState(false);
 
-  // ---------- Entity manager ----------
   const [entityDialogOpen, setEntityDialogOpen] = useState(false);
   const [activeEntityTab, setActiveEntityTab] = useState<
     "products" | "category" | "brand" | "packaging"
   >("products");
   const [entitySearch, setEntitySearch] = useState("");
 
-  const [productForm, setProductForm] = useState({
+  const [productForm, setProductForm] = useState<ProductFormData>({
     name: "",
     description: "",
     categoryId: "",
@@ -362,9 +291,9 @@ export default function StockPage(): JSX.Element {
   });
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
 
-  // ---------- History ----------
   const [priceHistoryDialogOpen, setPriceHistoryDialogOpen] = useState(false);
   const [selectedProductForHistory, setSelectedProductForHistory] = useState<Product | null>(null);
+
   const [stockHistoryDialogOpen, setStockHistoryDialogOpen] = useState(false);
   const [selectedStockForHistory, setSelectedStockForHistory] = useState<Stock | null>(null);
   const [stockHistoryRecords, setStockHistoryRecords] = useState<StockHistoryRecord[]>([]);
@@ -373,10 +302,8 @@ export default function StockPage(): JSX.Element {
   const [entityForm, setEntityForm] = useState({ name: "", type: "" });
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
 
-  // ---------- Expandable rows ----------
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
-  // ---------- Stats ----------
   const [stats, setStats] = useState({
     totalProducts: 0,
     totalBoxes: 0,
@@ -386,23 +313,13 @@ export default function StockPage(): JSX.Element {
     totalInventoryValue: 0,
   });
 
-  // ---------- Delete + Undo ----------
+  // ---------- delete with undo ----------
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
   const [deleteStock, setDeleteStock] = useState<Stock | null>(null);
   const [deletedStockBackup, setDeletedStockBackup] = useState<Stock | null>(null);
   const undoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const { show: showUndo, dismiss: dismissUndo } = useCountdownUndo();
 
-  // ---------- Bulk Stock Creation ----------
-  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
-  const [bulkSelectedProductIds, setBulkSelectedProductIds] = useState<Set<string>>(new Set());
-  const [bulkQuantities, setBulkQuantities] = useState<BulkStockForm>({});
-  const [bulkDefaultBoxes, setBulkDefaultBoxes] = useState(0);
-  const [bulkDefaultSingles, setBulkDefaultSingles] = useState(0);
-  const [bulkSearch, setBulkSearch] = useState("");
-  const [bulkLoading, setBulkLoading] = useState(false);
-
-  // ---------- Local storage ----------
+  // ==================== LOCALSTORAGE SYNC ====================
   useEffect(() => {
     setIsClient(true);
     const pinned = localStorage.getItem(STORAGE_PINNED_FILTER_KEY);
@@ -427,11 +344,13 @@ export default function StockPage(): JSX.Element {
     }
   }, [filterType, isFilterPinned, isClient]);
 
-  /* ========================================================================
-     FETCH ALL PRODUCTS (paginated)
-     ======================================================================== */
+  // reset page on search/filter change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, filterType]);
 
-  const fetchAllProducts = useCallback(async (): Promise<Product[]> => {
+  // ==================== FETCH ALL PRODUCTS (paginated) ====================
+  const fetchAllProducts = async (): Promise<Product[]> => {
     try {
       let allProducts: Product[] = [];
       let currentPage = 1;
@@ -452,42 +371,47 @@ export default function StockPage(): JSX.Element {
             currentPriceId: latestPrice?.id,
           };
         });
-        allProducts = allProducts.concat(productsWithPrice);
+        allProducts = [...allProducts, ...productsWithPrice];
         hasMore = more;
         currentPage++;
       }
       return allProducts;
-    } catch (e) {
-      console.error("Failed to fetch products:", e);
+    } catch (error) {
+      console.error("Failed to fetch products:", error);
       return [];
     }
-  }, []);
+  };
 
-  /* ========================================================================
-     FETCH ALL DATA
-     ======================================================================== */
-
-  const fetchAll = useCallback(async () => {
+  // ==================== FETCH ALL DATA ====================
+  const fetchAll = async (): Promise<void> => {
     try {
       setLoading(true);
       setError(null);
-      const [stocksRes, productsData, c, b, pkg] = await Promise.all([
+      const [stocksRes, productsData, catRes, brandRes, pkgRes] = await Promise.all([
         api.get<Stock[]>("/stocks"),
         fetchAllProducts(),
-        api.get<Category[]>("/categories"),
-        api.get<Brand[]>("/brands"),
-        api.get<Packaging[]>("/packagings"),
+        api.get("/categories"),
+        api.get("/brands"),
+        api.get("/packagings"),
       ]);
+
+      // backend may return { data, meta } or array
+      const catsArray = catRes.data?.data ?? catRes.data;
+      const brandsArray = brandRes.data?.data ?? brandRes.data;
+      const pkgsArray = pkgRes.data?.data ?? pkgRes.data;
+
       const stocksWithProducts = stocksRes.data.map((stock) => ({
         ...stock,
         product: productsData.find((prod) => prod.id === stock.productId),
       }));
+
       setStocks(stocksWithProducts);
       setProducts(productsData);
-      setCategories(c.data);
-      setBrands(b.data);
-      setPackagings(pkg.data);
+      setCategories(Array.isArray(catsArray) ? catsArray : []);
+      setBrands(Array.isArray(brandsArray) ? brandsArray : []);
+      setPackagings(Array.isArray(pkgsArray) ? pkgsArray : []);
 
+      // compute stats
       const totalBoxes = stocksWithProducts.reduce((sum, s) => sum + s.boxQuantity, 0);
       const totalSingles = stocksWithProducts.reduce((sum, s) => sum + s.singleQuantity, 0);
       const lowStockItems = stocksWithProducts.filter(
@@ -516,22 +440,19 @@ export default function StockPage(): JSX.Element {
         totalInventoryValue: totalValue,
       });
     } catch (e) {
-      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Failed to load data";
+      const message = (e as any)?.response?.data?.message || "Failed to load data";
       setError(message);
       toast.error(message);
     } finally {
       setLoading(false);
     }
-  }, [fetchAllProducts]);
+  };
 
   useEffect(() => {
     fetchAll();
-  }, [fetchAll]);
+  }, []);
 
-  /* ========================================================================
-     FILTERED STOCKS
-     ======================================================================== */
-
+  // ==================== FILTERED & PAGINATED STOCKS ====================
   const filteredStocks = useMemo(() => {
     let filtered = stocks;
     filtered = filtered.filter((s) =>
@@ -545,24 +466,21 @@ export default function StockPage(): JSX.Element {
     return filtered;
   }, [stocks, search, filterType]);
 
-  /* ========================================================================
-     HELPERS
-     ======================================================================== */
+  const totalPages = Math.max(1, Math.ceil(filteredStocks.length / pageSize));
+  const paginatedStocks = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredStocks.slice(start, start + pageSize);
+  }, [filteredStocks, currentPage, pageSize]);
 
-  const getCategoryName = useCallback(
-    (id: string): string => categories.find((c) => c.id === id)?.name ?? "—",
-    [categories]
-  );
-  const getBrandName = useCallback(
-    (id: string): string => brands.find((b) => b.id === id)?.name ?? "—",
-    [brands]
-  );
-  const getPackagingName = useCallback(
-    (id: string): string => packagings.find((p) => p.id === id)?.name ?? "—",
-    [packagings]
-  );
+  // ==================== HELPERS ====================
+  const getCategoryName = (id: string): string =>
+    categories.find((c) => c.id === id)?.name ?? "—";
+  const getBrandName = (id: string): string =>
+    brands.find((b) => b.id === id)?.name ?? "—";
+  const getPackagingName = (id: string): string =>
+    packagings.find((p) => p.id === id)?.name ?? "—";
 
-  const calculateStockProfit = useCallback((stock: Stock) => {
+  const calculateStockProfit = (stock: Stock) => {
     const product = stock.product;
     if (
       !product ||
@@ -601,17 +519,9 @@ export default function StockPage(): JSX.Element {
       totalRevenue,
       totalProfit,
     };
-  }, []);
+  };
 
-  const productHasStock = useCallback(
-    (productId: string) => stocks.some((s) => s.productId === productId),
-    [stocks]
-  );
-
-  /* ========================================================================
-     STOCK HISTORY
-     ======================================================================== */
-
+  // ==================== STOCK HISTORY ====================
   const fetchStockHistory = async (productId: string) => {
     try {
       setHistoryLoading(true);
@@ -630,10 +540,7 @@ export default function StockPage(): JSX.Element {
     setStockHistoryDialogOpen(true);
   };
 
-  /* ========================================================================
-     STOCK CRUD
-     ======================================================================== */
-
+  // ==================== STOCK CRUD ====================
   const resetStockForm = () => {
     setForm({
       productId: "",
@@ -665,7 +572,7 @@ export default function StockPage(): JSX.Element {
   ) => {
     const num = Number(value) || 0;
     const product = products.find((p) => p.id === form.productId);
-    const unitsPerBox = product?.unitsPerBox || DEFAULT_UNITS_PER_BOX;
+    const unitsPerBox = product?.unitsPerBox || 1;
     if (field === "boxQuantity") {
       setForm((prev) => ({
         ...prev,
@@ -689,7 +596,7 @@ export default function StockPage(): JSX.Element {
 
   const handleStockContainerTypeChange = (type: ContainerType) => {
     const product = products.find((p) => p.id === form.productId);
-    const unitsPerBox = product?.unitsPerBox || DEFAULT_UNITS_PER_BOX;
+    const unitsPerBox = product?.unitsPerBox || 1;
     const boxNum = Number(form.boxQuantity) || 0;
     const singleNum = Number(form.singleQuantity) || 0;
     if (type === ContainerType.BOX) {
@@ -719,19 +626,16 @@ export default function StockPage(): JSX.Element {
       return;
     }
 
-    const boxQty = Number(form.boxQuantity) || 0;
-    const singleQty = Number(form.singleQuantity) || 0;
-
-    const payload: { productId: string; containerType: ContainerType; boxQuantity?: number; singleQuantity?: number } = {
+    let payload: any = {
       productId: form.productId,
       containerType: form.containerType,
     };
 
     if (form.containerType === ContainerType.BOX) {
-      payload.boxQuantity = boxQty;
+      payload.boxQuantity = Number(form.boxQuantity) || 0;
       payload.singleQuantity = 0;
     } else {
-      payload.singleQuantity = singleQty;
+      payload.singleQuantity = Number(form.singleQuantity) || 0;
       payload.boxQuantity = 0;
     }
 
@@ -747,18 +651,14 @@ export default function StockPage(): JSX.Element {
       setFormDialogOpen(false);
       resetStockForm();
       await fetchAll();
-    } catch (e) {
-      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Failed to save stock";
-      toast.error(message);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || "Failed to save stock");
     } finally {
       setLoading(false);
     }
   };
 
-  /* ========================================================================
-     DELETE WITH LIVE UNDO COUNTDOWN
-     ======================================================================== */
-
+  // ==================== DELETE WITH UNDO ====================
   const confirmDelete = (stock: Stock) => {
     setDeleteStock(stock);
     setDeleteAlertOpen(true);
@@ -770,159 +670,57 @@ export default function StockPage(): JSX.Element {
     const backup = { ...deleteStock };
     setDeletedStockBackup(backup);
 
-    // Optimistic removal
     setStocks((prev) => prev.filter((s) => s.id !== deleteStock.id));
-    setStats((prev) => ({
+
+    setStats(prev => ({
       ...prev,
       totalBoxes: prev.totalBoxes - deleteStock.boxQuantity,
       totalSingles: prev.totalSingles - deleteStock.singleQuantity,
-      lowStockItems:
-        prev.lowStockItems -
-        (deleteStock.boxQuantity === 0 && deleteStock.singleQuantity === 0 ? 1 : 0),
+      lowStockItems: prev.lowStockItems - ((deleteStock.boxQuantity === 0 && deleteStock.singleQuantity === 0) ? 1 : 0),
     }));
 
     setDeleteAlertOpen(false);
     setDeleteStock(null);
 
-    // Schedule permanent deletion
+    toast("Stock entry deleted", {
+      description: `You have ${UNDO_SECONDS} seconds to undo this action.`,
+      duration: UNDO_SECONDS * 1000,
+      position: "bottom-left",
+      action: {
+        label: "Undo",
+        onClick: async () => {
+          if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
+          if (deletedStockBackup) {
+            try {
+              await api.post("/stocks", {
+                productId: deletedStockBackup.productId,
+                boxQuantity: deletedStockBackup.boxQuantity,
+                singleQuantity: deletedStockBackup.singleQuantity,
+                containerType: deletedStockBackup.containerType,
+              });
+              toast.success("Stock restored");
+              await fetchAll();
+            } catch (e) {
+              toast.error("Failed to restore stock");
+            }
+            setDeletedStockBackup(null);
+          }
+        },
+      },
+    });
+
     undoTimeoutRef.current = setTimeout(async () => {
       try {
         await api.delete(`/stocks/${deleteStock.id}`);
       } catch (e) {
         // ignore
       } finally {
-        undoTimeoutRef.current = null;
+        if (undoTimeoutRef.current) undoTimeoutRef.current = null;
       }
     }, UNDO_SECONDS * 1000);
-
-    // Show undo toast with live countdown
-    showUndo("Stock entry deleted", "You can undo this action", async () => {
-      // Undo: cancel timeout & restore entry
-      if (undoTimeoutRef.current) {
-        clearTimeout(undoTimeoutRef.current);
-        undoTimeoutRef.current = null;
-      }
-      if (deletedStockBackup) {
-        try {
-          await api.post("/stocks", {
-            productId: deletedStockBackup.productId,
-            boxQuantity: deletedStockBackup.boxQuantity,
-            singleQuantity: deletedStockBackup.singleQuantity,
-            containerType: deletedStockBackup.containerType,
-          });
-          toast.success("Stock restored");
-          await fetchAll();
-        } catch (e) {
-          toast.error("Failed to restore stock");
-        }
-        setDeletedStockBackup(null);
-      }
-    }, UNDO_SECONDS);
   };
 
-  /* ========================================================================
-     BULK CREATE STOCK ENTRIES
-     ======================================================================== */
-
-  const productsWithoutStock = useMemo(() => {
-    return products.filter((p) => !productHasStock(p.id));
-  }, [products, productHasStock]);
-
-  const filteredBulkProducts = useMemo(() => {
-    if (!bulkSearch) return productsWithoutStock;
-    return productsWithoutStock.filter((p) =>
-      p.name.toLowerCase().includes(bulkSearch.toLowerCase())
-    );
-  }, [productsWithoutStock, bulkSearch]);
-
-  const openBulkDialog = () => {
-    setBulkSelectedProductIds(new Set());
-    setBulkQuantities({});
-    setBulkDefaultBoxes(0);
-    setBulkDefaultSingles(0);
-    setBulkSearch("");
-    setBulkDialogOpen(true);
-  };
-
-  const toggleBulkProduct = (productId: string) => {
-    setBulkSelectedProductIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(productId)) {
-        next.delete(productId);
-        // Also remove from quantities
-        setBulkQuantities((prevQ) => {
-          const { [productId]: _, ...rest } = prevQ;
-          return rest;
-        });
-      } else {
-        next.add(productId);
-        // Initialize with default values
-        setBulkQuantities((prevQ) => ({
-          ...prevQ,
-          [productId]: { boxes: bulkDefaultBoxes, singles: bulkDefaultSingles },
-        }));
-      }
-      return next;
-    });
-  };
-
-  const applyDefaultToAllSelected = () => {
-    const updated: BulkStockForm = {};
-    for (const id of bulkSelectedProductIds) {
-      updated[id] = { boxes: bulkDefaultBoxes, singles: bulkDefaultSingles };
-    }
-    setBulkQuantities(updated);
-  };
-
-  const updateBulkQuantity = (productId: string, field: "boxes" | "singles", value: number) => {
-    setBulkQuantities((prev) => ({
-      ...prev,
-      [productId]: {
-        ...prev[productId],
-        [field]: Math.max(0, value),
-      },
-    }));
-  };
-
-  const handleBulkCreate = async () => {
-    if (bulkSelectedProductIds.size === 0) {
-      toast.error("Select at least one product");
-      return;
-    }
-
-    setBulkLoading(true);
-    let successCount = 0;
-    let failCount = 0;
-
-    const promises = Array.from(bulkSelectedProductIds).map(async (productId) => {
-      const qty = bulkQuantities[productId] || { boxes: 0, singles: 0 };
-      try {
-        await api.post("/stocks", {
-          productId,
-          boxQuantity: qty.boxes,
-          singleQuantity: qty.singles,
-          containerType: ContainerType.BOX, // default container type for bulk
-        });
-        successCount++;
-      } catch (e) {
-        failCount++;
-      }
-    });
-
-    await Promise.all(promises);
-
-    if (successCount) toast.success(`${successCount} stock entries created`);
-    if (failCount) toast.error(`${failCount} entries failed`);
-
-    setBulkLoading(false);
-    setBulkDialogOpen(false);
-    await fetchAll();
-  };
-
-  /* ========================================================================
-     RESTOCK
-     ======================================================================== */
-
+  // ==================== RESTOCK ====================
   const openRestockDialog = (stock: Stock) => {
     setRestockStock(stock);
     setRestockBoxes(0);
@@ -941,7 +739,7 @@ export default function StockPage(): JSX.Element {
     }
     try {
       setLoading(true);
-      const payload: Record<string, unknown> = {
+      const payload: any = {
         addBoxes: restockBoxes,
         addSingles: restockSingles,
         notes: restockNotes || "Manual restock",
@@ -954,18 +752,14 @@ export default function StockPage(): JSX.Element {
       toast.success(`Restocked ${restockBoxes} boxes and ${restockSingles} singles`);
       setRestockDialogOpen(false);
       await fetchAll();
-    } catch (e) {
-      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Restock failed";
-      toast.error(message);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || "Restock failed");
     } finally {
       setLoading(false);
     }
   };
 
-  /* ========================================================================
-     ADJUSTMENT
-     ======================================================================== */
-
+  // ==================== ADJUSTMENT ====================
   const openAdjustDialog = (stock: Stock) => {
     setAdjustStock(stock);
     setAdjustMode("set");
@@ -978,23 +772,22 @@ export default function StockPage(): JSX.Element {
 
   const handleAdjustSubmit = async () => {
     if (!adjustStock) return;
-
     let newBoxes = adjustStock.boxQuantity;
     let newSingles = adjustStock.singleQuantity;
-
     if (adjustMode === "add") {
       newBoxes += adjustBoxes;
       newSingles += adjustSingles;
     } else if (adjustMode === "subtract") {
-      newBoxes = Math.max(0, newBoxes - adjustBoxes);
-      newSingles = Math.max(0, newSingles - adjustSingles);
+      newBoxes -= adjustBoxes;
+      newSingles -= adjustSingles;
+      if (newBoxes < 0) newBoxes = 0;
+      if (newSingles < 0) newSingles = 0;
     } else {
       newBoxes = adjustExactBoxes;
       newSingles = adjustExactSingles;
     }
-
     const product = products.find((p) => p.id === adjustStock.productId);
-    const unitsPerBox = product?.unitsPerBox || DEFAULT_UNITS_PER_BOX;
+    const unitsPerBox = product?.unitsPerBox || 1;
     const extraBoxes = Math.floor(newSingles / unitsPerBox);
     newBoxes += extraBoxes;
     newSingles = newSingles % unitsPerBox;
@@ -1008,18 +801,14 @@ export default function StockPage(): JSX.Element {
       toast.success("Stock adjusted successfully");
       setAdjustDialogOpen(false);
       await fetchAll();
-    } catch (e) {
-      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Adjustment failed";
-      toast.error(message);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || "Adjustment failed");
     } finally {
       setLoading(false);
     }
   };
 
-  /* ========================================================================
-     EXCHANGE
-     ======================================================================== */
-
+  // ==================== EXCHANGE ====================
   const handleExchange = async () => {
     if (!exchangeForm.sourceProductId || !exchangeForm.targetProductId) {
       toast.error("Please select both products");
@@ -1052,18 +841,14 @@ export default function StockPage(): JSX.Element {
         notes: "",
       });
       await fetchAll();
-    } catch (e) {
-      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Exchange failed";
-      toast.error(message);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || "Exchange failed");
     } finally {
       setExchangeLoading(false);
     }
   };
 
-  /* ========================================================================
-     PRODUCT CRUD (inside entity dialog)
-     ======================================================================== */
-
+  // ==================== PRODUCT CRUD ====================
   const resetProductForm = () => {
     setProductForm({
       name: "",
@@ -1110,7 +895,6 @@ export default function StockPage(): JSX.Element {
       toast.error("Please fill all required fields");
       return;
     }
-
     const basicPayload = {
       name: productForm.name,
       description: productForm.description || undefined,
@@ -1119,14 +903,12 @@ export default function StockPage(): JSX.Element {
       packagingId: productForm.packagingId,
       unitsPerBox: Number(productForm.unitsPerBox) || DEFAULT_UNITS_PER_BOX,
     };
-
     const pricePayload = {
       buyPricePerBox: Number(productForm.buyPricePerBox) || 0,
       sellPricePerBox: Number(productForm.sellPricePerBox) || 0,
       sellPricePerUnit: Number(productForm.sellPricePerUnit) || 0,
       allowLoss: productForm.allowLoss,
     };
-
     try {
       setLoading(true);
       if (editingProductId) {
@@ -1148,9 +930,8 @@ export default function StockPage(): JSX.Element {
       }
       resetProductForm();
       await fetchAll();
-    } catch (e) {
-      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Failed to save product";
-      toast.error(message);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || "Failed to save product");
     } finally {
       setLoading(false);
     }
@@ -1162,9 +943,8 @@ export default function StockPage(): JSX.Element {
       await api.delete(`/products/${id}`);
       toast.success("Product deleted");
       await fetchAll();
-    } catch (e) {
-      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message || "Failed to delete product";
-      toast.error(message);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || "Failed to delete product");
     }
   };
 
@@ -1173,10 +953,7 @@ export default function StockPage(): JSX.Element {
     setPriceHistoryDialogOpen(true);
   };
 
-  /* ========================================================================
-     ENTITY CRUD (category/brand/packaging)
-     ======================================================================== */
-
+  // ==================== ENTITY CRUD ====================
   const getEntityEndpoint = (): string => {
     switch (activeEntityTab) {
       case "category":
@@ -1193,12 +970,10 @@ export default function StockPage(): JSX.Element {
   const handleEntitySubmit = async () => {
     const endpoint = getEntityEndpoint();
     if (!endpoint) return;
-
     const payload =
       activeEntityTab === "packaging"
         ? { type: entityForm.type }
         : { name: entityForm.name };
-
     if (
       (activeEntityTab !== "packaging" && !entityForm.name) ||
       (activeEntityTab === "packaging" && !entityForm.type)
@@ -1206,7 +981,6 @@ export default function StockPage(): JSX.Element {
       toast.error("Name / type is required");
       return;
     }
-
     try {
       setLoading(true);
       if (editingEntityId) {
@@ -1246,10 +1020,7 @@ export default function StockPage(): JSX.Element {
     }
   };
 
-  /* ========================================================================
-     ENTITY FILTERS
-     ======================================================================== */
-
+  // ---------- Filtered entities ----------
   const filteredProducts = useMemo(() => {
     const lower = entitySearch.toLowerCase();
     return products.filter((p) => p.name.toLowerCase().includes(lower));
@@ -1279,314 +1050,301 @@ export default function StockPage(): JSX.Element {
     });
   };
 
-  /* ========================================================================
-     RENDER
-     ======================================================================== */
+  const productHasStock = (productId: string) =>
+    stocks.some((s) => s.productId === productId);
 
+  // ==================== RENDER ====================
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 lg:p-8">
-        <div className="mx-auto max-w-7xl space-y-6">
-          {/* Header */}
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
-          >
-            <div>
-              <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 dark:from-indigo-400 dark:via-purple-400 dark:to-pink-400 bg-clip-text text-transparent">
-                Stock Management
-              </h1>
-              <p className="text-sm text-muted-foreground mt-1 flex items-center gap-1">
-                <Sparkles className="h-3 w-3 text-amber-500" />
-                Track inventory, manage exchanges, restock, and analyze profit
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setEntityDialogOpen(true)}
-                className="shadow-sm border-indigo-200 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-950"
-              >
-                <Settings className="mr-2 h-4 w-4" /> Manage
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setExchangeDialogOpen(true)}
-                className="shadow-sm border-amber-200 dark:border-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950"
-              >
-                <ArrowLeftRight className="mr-2 h-4 w-4" /> Exchange
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={openBulkDialog}
-                className="shadow-sm border-emerald-200 dark:border-emerald-800 hover:bg-emerald-50 dark:hover:bg-emerald-950"
-              >
-                <Layers3 className="mr-2 h-4 w-4" /> Bulk Stock
-              </Button>
-              <Button
-                onClick={() => openStockForm()}
-                className="shadow-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white border-0"
-              >
-                <Plus className="mr-2 h-4 w-4" /> Add Stock
-              </Button>
-            </div>
-          </motion.div>
-
-          {/* Stats Cards */}
-          {loading && !stocks.length ? (
-            <div className="grid gap-4 md:grid-cols-6">
-              {[...Array(6)].map((_, i) => (
-                <Skeleton key={i} className="h-28 rounded-xl" />
-              ))}
-            </div>
-          ) : (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.1 }}
-              className="grid gap-4 md:grid-cols-6"
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-4 md:p-6 lg:p-8 space-y-6">
+        {/* Header */}
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div>
+            <h1 className="text-3xl md:text-4xl font-bold tracking-tight bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 dark:from-indigo-400 dark:via-purple-400 dark:to-pink-400 bg-clip-text text-transparent">
+              Stock Management
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1 flex items-center gap-1">
+              <Sparkles className="h-3 w-3 text-amber-500" />
+              Track inventory, exchanges, restocks, and profitability
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEntityDialogOpen(true)}
+              className="shadow-sm border-indigo-200 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-950"
             >
-              <Card className="border-l-4 border-l-emerald-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Total Products
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center justify-between">
-                    <p className="text-3xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
-                      {stats.totalProducts}
-                    </p>
-                    <Package className="h-8 w-8 text-emerald-500 opacity-80" />
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-blue-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Total Boxes
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center justify-between">
-                    <p className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
-                      {stats.totalBoxes}
-                    </p>
-                    <Box className="h-8 w-8 text-blue-500 opacity-80" />
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-purple-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Total Singles
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center justify-between">
-                    <p className="text-3xl font-bold bg-gradient-to-r from-purple-600 to-violet-600 bg-clip-text text-transparent">
-                      {stats.totalSingles}
-                    </p>
-                    <Layers className="h-8 w-8 text-purple-500 opacity-80" />
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-amber-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Out of Stock
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center justify-between">
-                    <p className="text-3xl font-bold bg-gradient-to-r from-amber-600 to-orange-600 bg-clip-text text-transparent">
-                      {stats.lowStockItems}
-                    </p>
-                    {stats.lowStockItems > 0 ? (
-                      <TrendingDown className="h-8 w-8 text-amber-500 opacity-80" />
-                    ) : (
-                      <CheckCircle2 className="h-8 w-8 text-emerald-500 opacity-80" />
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-rose-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Profit Potential
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center justify-between">
-                    <p className="text-2xl font-bold bg-gradient-to-r from-rose-600 to-pink-600 bg-clip-text text-transparent">
-                      {stats.totalProfitPotential.toFixed(0)} {CURRENCY}
-                    </p>
-                    <DollarSign className="h-8 w-8 text-rose-500 opacity-80" />
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-indigo-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Inventory Value
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center justify-between">
-                    <p className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-blue-600 bg-clip-text text-transparent">
-                      {stats.totalInventoryValue.toFixed(0)} {CURRENCY}
-                    </p>
-                    <Archive className="h-8 w-8 text-indigo-500 opacity-80" />
-                  </div>
-                </CardContent>
-              </Card>
+              <Settings className="mr-2 h-4 w-4" /> Manage
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setExchangeDialogOpen(true)}
+              className="shadow-sm border-amber-200 dark:border-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950"
+            >
+              <ArrowLeftRight className="mr-2 h-4 w-4" /> Exchange
+            </Button>
+            <Button
+              onClick={() => openStockForm()}
+              className="shadow-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white border-0"
+            >
+              <Plus className="mr-2 h-4 w-4" /> Add Stock
+            </Button>
+          </div>
+        </motion.div>
+
+        {/* Stats Cards */}
+        {loading && !stocks.length ? (
+          <div className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
+            {[...Array(6)].map((_, i) => (
+              <Skeleton key={i} className="h-28 rounded-xl" />
+            ))}
+          </div>
+        ) : (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.1 }}
+            className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-6"
+          >
+            <Card className="border-l-4 border-l-emerald-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground">
+                  Total Products
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <p className="text-2xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
+                    {stats.totalProducts}
+                  </p>
+                  <Package className="h-6 w-6 text-emerald-500 opacity-80" />
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-l-4 border-l-blue-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground">
+                  Total Boxes
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <p className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
+                    {stats.totalBoxes}
+                  </p>
+                  <Box className="h-6 w-6 text-blue-500 opacity-80" />
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-l-4 border-l-purple-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground">
+                  Total Singles
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <p className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-violet-600 bg-clip-text text-transparent">
+                    {stats.totalSingles}
+                  </p>
+                  <Layers className="h-6 w-6 text-purple-500 opacity-80" />
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-l-4 border-l-amber-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground">
+                  Out of Stock
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <p className="text-2xl font-bold bg-gradient-to-r from-amber-600 to-orange-600 bg-clip-text text-transparent">
+                    {stats.lowStockItems}
+                  </p>
+                  {stats.lowStockItems > 0 ? (
+                    <TrendingDown className="h-6 w-6 text-amber-500 opacity-80" />
+                  ) : (
+                    <CheckCircle2 className="h-6 w-6 text-emerald-500 opacity-80" />
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-l-4 border-l-rose-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground">
+                  Profit Potential
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <p className="text-lg font-bold bg-gradient-to-r from-rose-600 to-pink-600 bg-clip-text text-transparent">
+                    {stats.totalProfitPotential.toFixed(0)} {CURRENCY}
+                  </p>
+                  <DollarSign className="h-6 w-6 text-rose-500 opacity-80" />
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-l-4 border-l-indigo-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground">
+                  Inventory Value
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <p className="text-lg font-bold bg-gradient-to-r from-indigo-600 to-blue-600 bg-clip-text text-transparent">
+                    {stats.totalInventoryValue.toFixed(0)} {CURRENCY}
+                  </p>
+                  <Archive className="h-6 w-6 text-indigo-500 opacity-80" />
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
+
+        {/* Filters and search */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex rounded-lg border bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm p-1 shadow-sm">
+              <Button
+                variant={filterType === "all" ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setFilterType("all")}
+                className={cn(
+                  filterType === "all" &&
+                    "bg-gradient-to-r from-indigo-500 to-purple-500 text-white"
+                )}
+              >
+                All
+              </Button>
+              <Button
+                variant={filterType === "box" ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setFilterType("box")}
+                className={cn(
+                  filterType === "box" &&
+                    "bg-gradient-to-r from-blue-500 to-cyan-500 text-white"
+                )}
+              >
+                Box
+              </Button>
+              <Button
+                variant={filterType === "single" ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setFilterType("single")}
+                className={cn(
+                  filterType === "single" &&
+                    "bg-gradient-to-r from-emerald-500 to-teal-500 text-white"
+                )}
+              >
+                Single
+              </Button>
+            </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setIsFilterPinned(!isFilterPinned)}
+                >
+                  {isFilterPinned ? (
+                    <Pin className="h-4 w-4 text-indigo-500" />
+                  ) : (
+                    <PinOff className="h-4 w-4 text-muted-foreground" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {isFilterPinned
+                  ? "Unpin default filter"
+                  : "Pin current filter as default"}
+              </TooltipContent>
+            </Tooltip>
+            <Badge
+              variant="secondary"
+              className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
+            >
+              {filteredStocks.length} items
+            </Badge>
+          </div>
+          <div className="relative w-full sm:w-64">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search products..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9 bg-white/70 dark:bg-slate-900/70 backdrop-blur-sm border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-indigo-500/20"
+            />
+          </div>
+        </div>
+
+        {/* Error */}
+        <AnimatePresence>
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive backdrop-blur-sm"
+            >
+              <AlertCircle className="h-5 w-5" />
+              <span>{error}</span>
             </motion.div>
           )}
+        </AnimatePresence>
 
-          {/* Search & Filter Bar */}
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2">
-              <div className="flex rounded-lg border bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm p-1 shadow-sm">
-                <Button
-                  variant={filterType === "all" ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => setFilterType("all")}
-                  className={cn(
-                    filterType === "all" &&
-                      "bg-gradient-to-r from-indigo-500 to-purple-500 text-white"
-                  )}
-                >
-                  All
-                </Button>
-                <Button
-                  variant={filterType === "box" ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => setFilterType("box")}
-                  className={cn(
-                    filterType === "box" &&
-                      "bg-gradient-to-r from-blue-500 to-cyan-500 text-white"
-                  )}
-                >
-                  Box
-                </Button>
-                <Button
-                  variant={filterType === "single" ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => setFilterType("single")}
-                  className={cn(
-                    filterType === "single" &&
-                      "bg-gradient-to-r from-emerald-500 to-teal-500 text-white"
-                  )}
-                >
-                  Single
-                </Button>
-              </div>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={() => setIsFilterPinned(!isFilterPinned)}
-                  >
-                    {isFilterPinned ? (
-                      <Pin className="h-4 w-4 text-indigo-500" />
-                    ) : (
-                      <PinOff className="h-4 w-4 text-muted-foreground" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {isFilterPinned
-                    ? "Unpin default filter"
-                    : "Pin current filter as default"}
-                </TooltipContent>
-              </Tooltip>
-              <Badge
-                variant="secondary"
-                className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
-              >
-                {filteredStocks.length} items
-              </Badge>
-            </div>
-            <div className="relative w-full sm:w-72">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="Search products..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9 bg-white/70 dark:bg-slate-900/70 backdrop-blur-sm border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-indigo-500/20"
-              />
-            </div>
-          </div>
-
-          {/* Error banner */}
-          <AnimatePresence>
-            {error && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive backdrop-blur-sm"
-              >
-                <AlertCircle className="h-5 w-5" />
-                <span>{error}</span>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Stock Table */}
-          <Card className="overflow-hidden border-0 shadow-xl bg-white/70 dark:bg-slate-900/70 backdrop-blur-md">
+        {/* Stock Table */}
+        <Card className="overflow-hidden border-0 shadow-xl bg-white/70 dark:bg-slate-900/70 backdrop-blur-md">
+          <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow className="bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 border-b-2 border-slate-300 dark:border-slate-600">
                   <TableHead className="w-8"></TableHead>
-                  <TableHead>Product</TableHead>
-                  <TableHead>Boxes</TableHead>
-                  <TableHead>Loose Singles</TableHead>
-                  <TableHead>Total Units</TableHead>
-                  <TableHead>Box Profit</TableHead>
-                  <TableHead>Single Profit</TableHead>
-                  <TableHead>Last Updated</TableHead>
-                  <TableHead className="w-52"></TableHead>
+                  <TableHead className="min-w-[160px]">Product</TableHead>
+                  <TableHead className="min-w-[80px]">Boxes</TableHead>
+                  <TableHead className="min-w-[90px]">Loose Singles</TableHead>
+                  <TableHead className="min-w-[90px]">Total Units</TableHead>
+                  <TableHead className="min-w-[100px]">Box Profit</TableHead>
+                  <TableHead className="min-w-[100px]">Single Profit</TableHead>
+                  <TableHead className="min-w-[100px]">Last Updated</TableHead>
+                  <TableHead className="w-12"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {loading && !filteredStocks.length ? (
+                {loading && !paginatedStocks.length ? (
                   [...Array(5)].map((_, i) => (
-                    <TableRow key={`skeleton-${i}`}>
+                    <TableRow key={i}>
                       <TableCell colSpan={9}>
                         <Skeleton className="h-12 w-full" />
                       </TableCell>
                     </TableRow>
                   ))
-                ) : filteredStocks.length === 0 ? (
+                ) : paginatedStocks.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={9} className="h-32 text-center">
                       <div className="flex flex-col items-center gap-2">
                         <Package className="h-12 w-12 text-muted-foreground/50" />
-                        <p className="text-muted-foreground">
-                          No stock entries found.
-                        </p>
+                        <p className="text-muted-foreground">No stock entries found.</p>
                       </div>
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredStocks.map((stock) => {
+                  paginatedStocks.map((stock) => {
                     const isExpanded = expandedRows.has(stock.id);
                     const product = stock.product;
-                    const unitsPerBox = product?.unitsPerBox || DEFAULT_UNITS_PER_BOX;
-                    const totalUnits =
-                      stock.boxQuantity * unitsPerBox + stock.singleQuantity;
+                    const unitsPerBox = product?.unitsPerBox || 1;
+                    const totalUnits = stock.boxQuantity * unitsPerBox + stock.singleQuantity;
                     const looseSingles = stock.singleQuantity % unitsPerBox;
                     const expectedSingles = stock.boxQuantity * unitsPerBox;
-                    const expectedBoxes = Math.floor(
-                      stock.singleQuantity / unitsPerBox
-                    );
+                    const expectedBoxes = Math.floor(stock.singleQuantity / unitsPerBox);
                     const isMismatch =
                       stock.containerType === ContainerType.BOX
                         ? stock.singleQuantity !== expectedSingles
@@ -1599,9 +1357,7 @@ export default function StockPage(): JSX.Element {
                           className={cn(
                             "group cursor-pointer transition-all duration-200 hover:bg-gradient-to-r hover:from-indigo-50/50 hover:to-purple-50/50 dark:hover:from-indigo-950/30 dark:hover:to-purple-950/30",
                             isMismatch && "bg-rose-50/50 dark:bg-rose-950/20",
-                            isLowStock &&
-                              !isMismatch &&
-                              "border-l-4 border-l-amber-500"
+                            isLowStock && !isMismatch && "border-l-4 border-l-amber-500"
                           )}
                           onClick={() => toggleRowExpanded(stock.id)}
                         >
@@ -1618,7 +1374,16 @@ export default function StockPage(): JSX.Element {
                               <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-100 to-purple-100 dark:from-indigo-900/50 dark:to-purple-900/50 flex items-center justify-center">
                                 <Package className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
                               </div>
-                              <span>{product?.name || "—"}</span>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="max-w-[180px] truncate block cursor-default">
+                                    {product?.name || "—"}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-xs break-words">
+                                  {product?.name}
+                                </TooltipContent>
+                              </Tooltip>
                               {isLowStock && (
                                 <Tooltip>
                                   <TooltipTrigger asChild>
@@ -1626,7 +1391,7 @@ export default function StockPage(): JSX.Element {
                                       variant="destructive"
                                       className="ml-1 text-xs"
                                     >
-                                      <AlertTriangle className="h-3 w-3 mr-0.5" /> Low Stock
+                                      <AlertTriangle className="h-3 w-3 mr-0.5" /> Low
                                     </Badge>
                                   </TooltipTrigger>
                                   <TooltipContent>
@@ -1662,108 +1427,75 @@ export default function StockPage(): JSX.Element {
                           <TableCell className="font-mono text-emerald-600 dark:text-emerald-400">
                             {profitData.singleProfit.toFixed(2)} {CURRENCY}
                           </TableCell>
-                          <TableCell className="text-sm text-muted-foreground">
+                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
                             {new Date(stock.updatedAt).toLocaleDateString()}
                           </TableCell>
                           <TableCell>
-                            <div className="flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openRestockDialog(stock);
-                                    }}
-                                  >
-                                    <PlusCircle className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Restock</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 hover:bg-amber-100 dark:hover:bg-amber-900/50"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openAdjustDialog(stock);
-                                    }}
-                                  >
-                                    <Calculator className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Adjust</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 hover:bg-blue-100 dark:hover:bg-blue-900/50"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openStockForm(stock);
-                                    }}
-                                  >
-                                    <Pencil className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Edit</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 hover:bg-purple-100 dark:hover:bg-purple-900/50"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openStockHistory(stock);
-                                    }}
-                                  >
-                                    <History className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Stock History</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 hover:bg-purple-100 dark:hover:bg-purple-900/50"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (product) openPriceHistory(product);
-                                    }}
-                                  >
-                                    <Clock className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Price History</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      confirmDelete(stock);
-                                    }}
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Delete</TooltipContent>
-                              </Tooltip>
-                            </div>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openRestockDialog(stock);
+                                  }}
+                                >
+                                  <PlusCircle className="mr-2 h-4 w-4" /> Restock
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openAdjustDialog(stock);
+                                  }}
+                                >
+                                  <Calculator className="mr-2 h-4 w-4" /> Adjust
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openStockForm(stock);
+                                  }}
+                                >
+                                  <Pencil className="mr-2 h-4 w-4" /> Edit
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openStockHistory(stock);
+                                  }}
+                                >
+                                  <History className="mr-2 h-4 w-4" /> Stock History
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  onClick={(e: { stopPropagation: () => void; }) => {
+                                    e.stopPropagation();
+                                    if (product) openPriceHistory(product);
+                                  }}
+                                >
+                                  <Clock className="mr-2 h-4 w-4" /> Price History
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  className="text-destructive"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    confirmDelete(stock);
+                                  }}
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" /> Delete
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </TableCell>
                         </TableRow>
                         {isExpanded && (
@@ -1775,7 +1507,8 @@ export default function StockPage(): JSX.Element {
                                 exit={{ opacity: 0, height: 0 }}
                                 className="px-6 py-5 bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800/50 dark:to-slate-900/50"
                               >
-                                <div className="grid gap-6 md:grid-cols-4">
+                                <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+                                  {/* Product Details */}
                                   <div className="space-y-3">
                                     <div className="flex items-center gap-2">
                                       <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center">
@@ -1786,50 +1519,23 @@ export default function StockPage(): JSX.Element {
                                       </h4>
                                     </div>
                                     <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-white/50 dark:bg-slate-900/50 rounded-xl p-3 backdrop-blur-sm">
-                                      <span className="text-muted-foreground">
-                                        Category:
-                                      </span>
-                                      <span className="font-medium">
-                                        {getCategoryName(product?.categoryId || "")}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Brand:
-                                      </span>
-                                      <span className="font-medium">
-                                        {getBrandName(product?.brandId || "")}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Packaging:
-                                      </span>
-                                      <span className="font-medium capitalize">
-                                        {getPackagingName(product?.packagingId || "")}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Units/Box:
-                                      </span>
-                                      <span className="font-mono font-medium">
-                                        {unitsPerBox}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Buy Price/Box:
-                                      </span>
-                                      <span className="font-mono font-medium text-blue-600">
-                                        {Number(product?.buyPricePerBox || 0).toFixed(2)} {CURRENCY}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Sell Price/Box:
-                                      </span>
-                                      <span className="font-mono font-medium text-emerald-600">
-                                        {Number(product?.sellPricePerBox || 0).toFixed(2)} {CURRENCY}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Sell Price/Unit:
-                                      </span>
-                                      <span className="font-mono font-medium text-emerald-600">
-                                        {Number(product?.sellPricePerUnit || 0).toFixed(2)} {CURRENCY}
-                                      </span>
+                                      <span className="text-muted-foreground">Category:</span>
+                                      <span className="font-medium">{getCategoryName(product?.categoryId || "")}</span>
+                                      <span className="text-muted-foreground">Brand:</span>
+                                      <span className="font-medium">{getBrandName(product?.brandId || "")}</span>
+                                      <span className="text-muted-foreground">Packaging:</span>
+                                      <span className="font-medium capitalize">{getPackagingName(product?.packagingId || "")}</span>
+                                      <span className="text-muted-foreground">Units/Box:</span>
+                                      <span className="font-mono font-medium">{unitsPerBox}</span>
+                                      <span className="text-muted-foreground">Buy Price/Box:</span>
+                                      <span className="font-mono font-medium text-blue-600">{Number(product?.buyPricePerBox || 0).toFixed(2)} {CURRENCY}</span>
+                                      <span className="text-muted-foreground">Sell Price/Box:</span>
+                                      <span className="font-mono font-medium text-emerald-600">{Number(product?.sellPricePerBox || 0).toFixed(2)} {CURRENCY}</span>
+                                      <span className="text-muted-foreground">Sell Price/Unit:</span>
+                                      <span className="font-mono font-medium text-emerald-600">{Number(product?.sellPricePerUnit || 0).toFixed(2)} {CURRENCY}</span>
                                     </div>
                                   </div>
+                                  {/* Stock Breakdown */}
                                   <div className="space-y-3">
                                     <div className="flex items-center gap-2">
                                       <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center">
@@ -1840,32 +1546,17 @@ export default function StockPage(): JSX.Element {
                                       </h4>
                                     </div>
                                     <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-white/50 dark:bg-slate-900/50 rounded-xl p-3 backdrop-blur-sm">
-                                      <span className="text-muted-foreground">
-                                        Full Boxes:
-                                      </span>
-                                      <span className="font-mono font-medium">
-                                        {stock.boxQuantity}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Loose Singles:
-                                      </span>
-                                      <span className="font-mono font-medium">
-                                        {looseSingles}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Total Units:
-                                      </span>
-                                      <span className="font-mono font-bold text-lg">
-                                        {totalUnits}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Box Equivalent:
-                                      </span>
-                                      <span className="font-mono font-medium">
-                                        {(totalUnits / unitsPerBox).toFixed(1)}
-                                      </span>
+                                      <span className="text-muted-foreground">Full Boxes:</span>
+                                      <span className="font-mono font-medium">{stock.boxQuantity}</span>
+                                      <span className="text-muted-foreground">Loose Singles:</span>
+                                      <span className="font-mono font-medium">{looseSingles}</span>
+                                      <span className="text-muted-foreground">Total Units:</span>
+                                      <span className="font-mono font-bold text-lg">{totalUnits}</span>
+                                      <span className="text-muted-foreground">Box Equivalent:</span>
+                                      <span className="font-mono font-medium">{(totalUnits / unitsPerBox).toFixed(1)}</span>
                                     </div>
                                   </div>
+                                  {/* Financial Summary */}
                                   <div className="space-y-3">
                                     <div className="flex items-center gap-2">
                                       <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center">
@@ -1876,38 +1567,19 @@ export default function StockPage(): JSX.Element {
                                       </h4>
                                     </div>
                                     <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-white/50 dark:bg-slate-900/50 rounded-xl p-3 backdrop-blur-sm">
-                                      <span className="text-muted-foreground">
-                                        Cost per Unit:
-                                      </span>
-                                      <span className="font-mono font-medium text-blue-600">
-                                        {profitData.costPerUnit.toFixed(2)} {CURRENCY}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Unit Profit:
-                                      </span>
-                                      <span className="font-mono font-medium text-emerald-600">
-                                        {profitData.unitProfit.toFixed(2)} {CURRENCY}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Total Cost:
-                                      </span>
-                                      <span className="font-mono font-medium text-rose-600">
-                                        {profitData.totalCost.toFixed(2)} {CURRENCY}
-                                      </span>
-                                      <span className="text-muted-foreground">
-                                        Total Revenue:
-                                      </span>
-                                      <span className="font-mono font-medium text-emerald-600">
-                                        {profitData.totalRevenue.toFixed(2)} {CURRENCY}
-                                      </span>
-                                      <span className="text-muted-foreground font-semibold">
-                                        Total Profit:
-                                      </span>
-                                      <span className="font-mono font-bold text-lg text-emerald-700 dark:text-emerald-300">
-                                        {profitData.totalProfit.toFixed(2)} {CURRENCY}
-                                      </span>
+                                      <span className="text-muted-foreground">Cost per Unit:</span>
+                                      <span className="font-mono font-medium text-blue-600">{profitData.costPerUnit.toFixed(2)} {CURRENCY}</span>
+                                      <span className="text-muted-foreground">Unit Profit:</span>
+                                      <span className="font-mono font-medium text-emerald-600">{profitData.unitProfit.toFixed(2)} {CURRENCY}</span>
+                                      <span className="text-muted-foreground">Total Cost:</span>
+                                      <span className="font-mono font-medium text-rose-600">{profitData.totalCost.toFixed(2)} {CURRENCY}</span>
+                                      <span className="text-muted-foreground">Total Revenue:</span>
+                                      <span className="font-mono font-medium text-emerald-600">{profitData.totalRevenue.toFixed(2)} {CURRENCY}</span>
+                                      <span className="text-muted-foreground font-semibold">Total Profit:</span>
+                                      <span className="font-mono font-bold text-lg text-emerald-700 dark:text-emerald-300">{profitData.totalProfit.toFixed(2)} {CURRENCY}</span>
                                     </div>
                                   </div>
+                                  {/* Consistency Check */}
                                   <div className="space-y-3">
                                     <div className="flex items-center gap-2">
                                       <div
@@ -1966,9 +1638,7 @@ export default function StockPage(): JSX.Element {
                                           Quantities are consistent
                                         </p>
                                         <p className="mt-2 text-sm text-emerald-600 dark:text-emerald-400">
-                                          The box and single quantities align
-                                          perfectly with the product's units per
-                                          box.
+                                          The box and single quantities align perfectly with the product's units per box.
                                         </p>
                                       </div>
                                     )}
@@ -1984,12 +1654,91 @@ export default function StockPage(): JSX.Element {
                 )}
               </TableBody>
             </Table>
-          </Card>
-        </div>
+          </div>
 
-        {/* ====================================================================
-             DIALOGS
-             ==================================================================== */}
+          {/* Pagination Controls */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 border-t border-slate-200 dark:border-slate-700 bg-white/40 dark:bg-slate-900/40 backdrop-blur-sm">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span>Rows per page:</span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(value) => {
+                  setPageSize(Number(value));
+                  setCurrentPage(1);
+                }}
+              >
+                <SelectTrigger className="w-20 h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="5">5</SelectItem>
+                  <SelectItem value="10">10</SelectItem>
+                  <SelectItem value="20">20</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <Pagination>
+                <PaginationContent>
+                  <PaginationItem>
+                    <PaginationPrevious
+                      onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                      className={cn(
+                        currentPage === 1 ? "pointer-events-none opacity-50" : ""
+                      )}
+                    />
+                  </PaginationItem>
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter(
+                      (page) =>
+                        page === 1 ||
+                        page === totalPages ||
+                        (page >= currentPage - 1 && page <= currentPage + 1)
+                    )
+                    .map((page, idx, arr) => (
+                      <React.Fragment key={page}>
+                        {idx > 0 && page - arr[idx - 1] > 1 && (
+                          <PaginationItem>
+                            <span className="px-2 py-1">...</span>
+                          </PaginationItem>
+                        )}
+                        <PaginationItem>
+                          <PaginationLink
+                            onClick={() => setCurrentPage(page)}
+                            isActive={currentPage === page}
+                          >
+                            {page}
+                          </PaginationLink>
+                        </PaginationItem>
+                      </React.Fragment>
+                    ))}
+                  <PaginationItem>
+                    <PaginationNext
+                      onClick={() =>
+                        setCurrentPage((prev) => Math.min(totalPages, prev + 1))
+                      }
+                      className={cn(
+                        currentPage === totalPages
+                          ? "pointer-events-none opacity-50"
+                          : ""
+                      )}
+                    />
+                  </PaginationItem>
+                </PaginationContent>
+              </Pagination>
+            </div>
+
+            <div className="text-sm text-muted-foreground">
+              {(currentPage - 1) * pageSize + 1}–
+              {Math.min(currentPage * pageSize, filteredStocks.length)} of{" "}
+              {filteredStocks.length}
+            </div>
+          </div>
+        </Card>
+
+        {/* ========== DIALOGS ========== */}
 
         {/* Delete Confirmation Dialog */}
         <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
@@ -2059,8 +1808,7 @@ export default function StockPage(): JSX.Element {
                 </Select>
                 {!editingId && (
                   <p className="text-xs text-amber-600 dark:text-amber-400">
-                    Only products without existing stock are shown. Use "Restock"
-                    to add more.
+                    Only products without existing stock are shown. Use "Restock" to add more.
                   </p>
                 )}
               </div>
@@ -2131,145 +1879,6 @@ export default function StockPage(): JSX.Element {
                 className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white"
               >
                 {editingId ? "Update" : "Create"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Bulk Stock Dialog */}
-        <Dialog open={bulkDialogOpen} onOpenChange={setBulkDialogOpen}>
-          <DialogContent className="min-w-4xl max-h-[85vh] overflow-y-auto border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
-            <DialogHeader>
-              <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
-                Bulk Stock Creation
-              </DialogTitle>
-              <DialogDescription>
-                Add stock entries for multiple products at once. Only products without existing stock are shown.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="relative">
-                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Search products..."
-                  value={bulkSearch}
-                  onChange={(e) => setBulkSearch(e.target.value)}
-                  className="pl-8 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
-                />
-              </div>
-              {filteredBulkProducts.length === 0 ? (
-                <div className="py-8 text-center text-muted-foreground">
-                  All products already have stock, or none match the search.
-                </div>
-              ) : (
-                <>
-                  <div className="flex items-center justify-between">
-                    <Label className="text-sm">Select products & set quantities (boxes / singles)</Label>
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-1">
-                        <Input
-                          type="number"
-                          min={0}
-                          value={bulkDefaultBoxes}
-                          onChange={(e) => setBulkDefaultBoxes(Number(e.target.value) || 0)}
-                          className="w-16 h-8 text-xs bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
-                        />
-                        <span className="text-xs">Boxes</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Input
-                          type="number"
-                          min={0}
-                          value={bulkDefaultSingles}
-                          onChange={(e) => setBulkDefaultSingles(Number(e.target.value) || 0)}
-                          className="w-16 h-8 text-xs bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
-                        />
-                        <span className="text-xs">Singles</span>
-                      </div>
-                      <Button variant="outline" size="sm" onClick={applyDefaultToAllSelected}>
-                        Apply to All
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    {filteredBulkProducts.map((product) => {
-                      const isSelected = bulkSelectedProductIds.has(product.id);
-                      const qty = bulkQuantities[product.id] || { boxes: bulkDefaultBoxes, singles: bulkDefaultSingles };
-                      return (
-                        <div
-                          key={product.id}
-                          className={cn(
-                            "flex items-center gap-3 rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm px-3 py-2 hover:shadow-sm transition-shadow",
-                            isSelected && "ring-2 ring-emerald-300 dark:ring-emerald-700"
-                          )}
-                        >
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 shrink-0"
-                            onClick={() => toggleBulkProduct(product.id)}
-                          >
-                            <CheckCircle2
-                              className={cn(
-                                "h-5 w-5",
-                                isSelected ? "text-emerald-500" : "text-muted-foreground"
-                              )}
-                            />
-                          </Button>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium truncate">{product.name}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {product.unitsPerBox} per box | {getCategoryName(product.categoryId)}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <Input
-                              type="number"
-                              min={0}
-                              value={qty.boxes}
-                              onChange={(e) =>
-                                updateBulkQuantity(product.id, "boxes", Number(e.target.value) || 0)
-                              }
-                              className="w-16 h-7 text-xs bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
-                              disabled={!isSelected}
-                            />
-                            <span className="text-xs">Box</span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <Input
-                              type="number"
-                              min={0}
-                              value={qty.singles}
-                              onChange={(e) =>
-                                updateBulkQuantity(product.id, "singles", Number(e.target.value) || 0)
-                              }
-                              className="w-16 h-7 text-xs bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
-                              disabled={!isSelected}
-                            />
-                            <span className="text-xs">Single</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setBulkDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button
-                onClick={handleBulkCreate}
-                disabled={bulkLoading || bulkSelectedProductIds.size === 0}
-                className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white"
-              >
-                {bulkLoading ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <Plus className="mr-2 h-4 w-4" />
-                )}
-                Create {bulkSelectedProductIds.size} Stock Entries
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -2675,7 +2284,7 @@ export default function StockPage(): JSX.Element {
             <div className="max-h-96 overflow-y-auto">
               {historyLoading ? (
                 <div className="py-8 text-center">
-                  <Loader2 className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
+                  <RefreshCw className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
                 </div>
               ) : stockHistoryRecords.length === 0 ? (
                 <p className="text-center text-muted-foreground py-8">
@@ -2689,7 +2298,6 @@ export default function StockPage(): JSX.Element {
                       <TableHead>Action</TableHead>
                       <TableHead>Boxes</TableHead>
                       <TableHead>Singles</TableHead>
-                      <TableHead>Change</TableHead>
                       <TableHead>Notes</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -2972,11 +2580,11 @@ export default function StockPage(): JSX.Element {
                         animate={{ opacity: 1 }}
                         className="flex items-center justify-between rounded-xl border-0 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm p-3 hover:shadow-md transition-shadow"
                       >
-                        <div className="flex-1">
-                          <div className="font-medium text-indigo-700 dark:text-indigo-300">
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-indigo-700 dark:text-indigo-300 truncate">
                             {product.name}
                           </div>
-                          <div className="text-xs text-muted-foreground">
+                          <div className="text-xs text-muted-foreground truncate">
                             {getCategoryName(product.categoryId)} |{" "}
                             {getBrandName(product.brandId)} |{" "}
                             {getPackagingName(product.packagingId)}
@@ -3025,8 +2633,7 @@ export default function StockPage(): JSX.Element {
                 </div>
               </TabsContent>
 
-              {/* Categories Tab (unchanged) */}
-              {/* ... same as provided ... */}
+              {/* Categories Tab */}
               <TabsContent value="category" className="space-y-4">
                 <div className="relative">
                   <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -3268,10 +2875,7 @@ export default function StockPage(): JSX.Element {
         </Dialog>
 
         {/* Price History Dialog */}
-        <Dialog
-          open={priceHistoryDialogOpen}
-          onOpenChange={setPriceHistoryDialogOpen}
-        >
+        <Dialog open={priceHistoryDialogOpen} onOpenChange={setPriceHistoryDialogOpen}>
           <DialogContent className="max-w-2xl border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
@@ -3305,13 +2909,13 @@ export default function StockPage(): JSX.Element {
                           : "Current"}
                       </TableCell>
                       <TableCell>
-                        {price.buyPricePerBox.toFixed(2)} {CURRENCY}
+                        {(Number(price.buyPricePerBox) ?? 0).toFixed(2)} {CURRENCY}
                       </TableCell>
                       <TableCell>
-                        {price.sellPricePerBox.toFixed(2)} {CURRENCY}
+                        {(Number(price.sellPricePerBox) ?? 0).toFixed(2)} {CURRENCY}
                       </TableCell>
                       <TableCell>
-                        {price.sellPricePerUnit.toFixed(2)} {CURRENCY}
+                        {(Number(price.sellPricePerUnit) ?? 0).toFixed(2)} {CURRENCY}
                       </TableCell>
                       <TableCell>
                         {price.allowLoss ? (
@@ -3333,10 +2937,7 @@ export default function StockPage(): JSX.Element {
               </Table>
             </div>
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setPriceHistoryDialogOpen(false)}
-              >
+              <Button variant="outline" onClick={() => setPriceHistoryDialogOpen(false)}>
                 Close
               </Button>
             </DialogFooter>

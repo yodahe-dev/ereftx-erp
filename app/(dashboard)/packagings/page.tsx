@@ -1,6 +1,6 @@
 "use client";
 
-import { JSX, useEffect, useMemo, useState } from "react";
+import { JSX, useEffect, useState, useCallback, useRef } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,13 +32,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { motion } from "framer-motion";
 import {
   Trash2,
@@ -48,159 +41,129 @@ import {
   Sparkles,
   Box,
   Package,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
+import { cn } from "@/lib/utils";
 
-/**
- * =====================
- * TYPES
- * =====================
- * Backend returns { id, name, createdAt, updatedAt }
- * but expects { type } in request body.
- */
+// ==================== TYPES ====================
 interface Packaging {
   id: string;
-  name: string;      // ✅ backend returns "name", not "type"
+  name: string;
   createdAt?: string;
   updatedAt?: string;
 }
 
-interface ApiError {
-  response?: {
-    data?: {
-      message?: string;
-    };
-  };
+interface PaginationMeta {
+  totalItems: number;
+  totalPages: number;
+  currentPage: number;
+  limit: number;
 }
 
-/**
- * =====================
- * CONSTANTS
- * =====================
- */
-const UNDO_TIMEOUT_SECONDS = 5;
-const PACKAGING_TYPES = ["bottle", "can", "plastic"];
+// ==================== CONSTANTS ====================
+const DEFAULT_LIMIT = 12;
+const UNDO_SECONDS = 10;
 
-/**
- * =====================
- * COMPONENT
- * =====================
- */
 export default function PackagingPage(): JSX.Element {
-  const [items, setItems] = useState<Packaging[]>([]);
-  const [selectedType, setSelectedType] = useState<string>("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [fetching, setFetching] = useState<boolean>(true);
+  const [packagings, setPackagings] = useState<Packaging[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState<string>("");
+  const [meta, setMeta] = useState<PaginationMeta>({
+    totalItems: 0,
+    totalPages: 1,
+    currentPage: 1,
+    limit: DEFAULT_LIMIT,
+  });
 
-  // Dialogs
+  // Form state
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [formName, setFormName] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Delete state
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
-  const [deleteItemId, setDeleteItemId] = useState<string | null>(null);
-  const [deleteTimer, setDeleteTimer] = useState<number>(UNDO_TIMEOUT_SECONDS);
-  const [deleteIntervalId, setDeleteIntervalId] = useState<NodeJS.Timeout | null>(null);
+  const [deleteItem, setDeleteItem] = useState<Packaging | null>(null);
+  const [deleteTimer, setDeleteTimer] = useState(UNDO_SECONDS);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  /**
-   * =====================
-   * FETCH
-   * =====================
-   */
-  const fetchPackagings = async (): Promise<void> => {
-    try {
-      setFetching(true);
+  // ==================== FETCH PACKAGINGS ====================
+  const fetchPackagings = useCallback(
+    async (page = 1, searchTerm = search) => {
+      setLoading(true);
       setError(null);
-      const res = await api.get<Packaging[]>("/packagings");
-      if (!Array.isArray(res.data)) {
-        throw new Error("Invalid API response");
+      try {
+        const res = await api.get<{ data: Packaging[]; meta: PaginationMeta }>(
+          `/packagings?page=${page}&limit=${meta.limit}&search=${encodeURIComponent(searchTerm)}`
+        );
+        setPackagings(res.data.data || []);
+        setMeta(res.data.meta);
+      } catch (err: any) {
+        const msg = err?.response?.data?.message || "Failed to load packagings";
+        setError(msg);
+        toast.error(msg);
+      } finally {
+        setLoading(false);
       }
-      // Ensure every item has a name (fallback to empty string)
-      const safeData = res.data.map((p) => ({
-        ...p,
-        name: p.name || "",
-      }));
-      setItems(safeData);
-    } catch (e: unknown) {
-      const err = e as ApiError;
-      const msg = err?.response?.data?.message || "Failed to load packagings";
-      setError(msg);
-      toast.error(msg);
-    } finally {
-      setFetching(false);
-    }
-  };
+    },
+    [meta.limit] // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
+  // Initial fetch
   useEffect(() => {
-    void fetchPackagings();
-  }, []);
+    fetchPackagings(1);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /**
-   * =====================
-   * FILTER (safe)
-   * =====================
-   */
-  const filteredItems = useMemo<Packaging[]>(() => {
-    const q = search.toLowerCase();
-    return items.filter((p) => (p.name || "").toLowerCase().includes(q));
-  }, [items, search]);
+  // Debounced search
+  useEffect(() => {
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(() => {
+      fetchPackagings(1, search);
+    }, 400);
+    return () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    };
+  }, [search, fetchPackagings]);
 
-  /**
-   * =====================
-   * RESET FORM
-   * =====================
-   */
-  const resetForm = (): void => {
-    setSelectedType("");
+  // ==================== FORM HANDLERS ====================
+  const resetForm = () => {
+    setFormName("");
     setEditingId(null);
   };
 
-  /**
-   * =====================
-   * OPEN DIALOG
-   * =====================
-   */
-  const openCreateDialog = (): void => {
+  const openCreateDialog = () => {
     resetForm();
     setDialogOpen(true);
   };
 
-  const openEditDialog = (item: Packaging): void => {
-    setSelectedType(item.name);
+  const openEditDialog = (item: Packaging) => {
+    setFormName(item.name);
     setEditingId(item.id);
     setDialogOpen(true);
   };
 
-  const handleDialogClose = (): void => {
-    setDialogOpen(false);
-    resetForm();
+  const handleSubmit = async () => {
+    const name = formName.trim();
+    if (!name) {
+      setError("Packaging name is required");
+      return;
+    }
+
+    setSubmitting(true);
     setError(null);
-  };
-
-  /**
-   * =====================
-   * SUBMIT
-   * =====================
-   */
-  const handleSubmit = async (): Promise<void> => {
-    const trimmed = selectedType.trim();
-    if (!trimmed) {
-      setError("Packaging type is required");
-      return;
-    }
-
-    // Validate against allowed enum
-    if (!PACKAGING_TYPES.includes(trimmed.toLowerCase())) {
-      setError(`Invalid type. Allowed: ${PACKAGING_TYPES.join(", ")}`);
-      return;
-    }
-
     try {
-      setLoading(true);
-      setError(null);
-
-      const payload = { type: trimmed.toLowerCase() }; // backend expects { type }
-
+      const payload = { name };
       if (editingId) {
         await api.put(`/packagings/${editingId}`, payload);
         toast.success("Packaging updated");
@@ -208,53 +171,49 @@ export default function PackagingPage(): JSX.Element {
         await api.post("/packagings", payload);
         toast.success("Packaging created");
       }
-
-      handleDialogClose();
-      await fetchPackagings();
-    } catch (e: unknown) {
-      const err = e as ApiError;
+      setDialogOpen(false);
+      resetForm();
+      await fetchPackagings(meta.currentPage);
+    } catch (err: any) {
       const msg = err?.response?.data?.message || "Failed to save packaging";
       setError(msg);
       toast.error(msg);
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
-  /**
-   * =====================
-   * DELETE WITH UNDO
-   * =====================
-   */
-  const initiateDelete = (id: string): void => {
-    setDeleteItemId(id);
-    setDeleteTimer(UNDO_TIMEOUT_SECONDS);
+  // ==================== DELETE WITH UNDO ====================
+  const initiateDelete = (item: Packaging) => {
+    setDeleteItem(item);
+    setDeleteTimer(UNDO_SECONDS);
     setDeleteAlertOpen(true);
-    const interval = setInterval(() => {
+
+    // Start countdown
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
       setDeleteTimer((prev) => {
         if (prev <= 1) {
-          clearInterval(interval);
+          clearInterval(timerRef.current!);
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
-    setDeleteIntervalId(interval);
   };
 
-  const cancelDelete = (): void => {
-    if (deleteIntervalId) clearInterval(deleteIntervalId);
+  const cancelDelete = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
     setDeleteAlertOpen(false);
-    setDeleteItemId(null);
-    setDeleteTimer(UNDO_TIMEOUT_SECONDS);
+    setDeleteItem(null);
   };
 
-  const confirmDelete = async (): Promise<void> => {
-    if (!deleteItemId) return;
+  const confirmDelete = async () => {
+    if (!deleteItem || deleteTimer > 0) return; // only allow after timer expires
     try {
-      await api.delete(`/packagings/${deleteItemId}`);
+      await api.delete(`/packagings/${deleteItem.id}`);
       toast.success("Packaging deleted");
-      await fetchPackagings();
+      await fetchPackagings(meta.currentPage);
     } catch (err) {
       toast.error("Failed to delete packaging");
     } finally {
@@ -262,36 +221,25 @@ export default function PackagingPage(): JSX.Element {
     }
   };
 
-  /**
-   * =====================
-   * RENDER
-   * =====================
-   */
-  if (fetching && items.length === 0) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 lg:p-8">
-        <div className="mx-auto max-w-7xl space-y-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="h-8 w-48 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
-              <div className="mt-1 h-4 w-64 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
-            </div>
-            <div className="h-10 w-32 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
-          </div>
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {[...Array(6)].map((_, i) => (
-              <Skeleton key={i} className="h-20 rounded-xl" />
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
 
+  // ==================== PAGINATION ====================
+  const handlePageChange = (page: number) => {
+    if (page < 1 || page > meta.totalPages) return;
+    fetchPackagings(page, search);
+  };
+
+  // ==================== RENDER ====================
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 lg:p-8">
         <div className="mx-auto max-w-7xl space-y-6">
+          {/* Header */}
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -315,7 +263,7 @@ export default function PackagingPage(): JSX.Element {
             </Button>
           </motion.div>
 
-          {/* Statistics */}
+          {/* Stats */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -325,13 +273,13 @@ export default function PackagingPage(): JSX.Element {
             <Card className="border-l-4 border-l-emerald-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Total Packaging Types
+                  Total Packaging
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center justify-between">
                   <p className="text-3xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
-                    {items.length}
+                    {meta.totalItems}
                   </p>
                   <Box className="h-8 w-8 text-emerald-500 opacity-80" />
                 </div>
@@ -339,13 +287,13 @@ export default function PackagingPage(): JSX.Element {
             </Card>
           </motion.div>
 
-          {/* Search & Error */}
+          {/* Search & Info */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <Badge
               variant="secondary"
               className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
             >
-              {filteredItems.length} item{filteredItems.length !== 1 ? "s" : ""}
+              {meta.totalItems} item{meta.totalItems !== 1 ? "s" : ""}
             </Badge>
             <div className="relative w-full sm:w-72">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -358,78 +306,151 @@ export default function PackagingPage(): JSX.Element {
             </div>
           </div>
 
-          {error && !fetching && (
-            <div className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive backdrop-blur-sm">
+          {error && !loading && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive backdrop-blur-sm"
+            >
               <span>{error}</span>
-            </div>
+            </motion.div>
           )}
 
-          {/* Packaging Cards */}
-          {filteredItems.length === 0 && !fetching ? (
-            <div className="py-12 text-center">
-              <Package className="mx-auto h-12 w-12 text-muted-foreground/50" />
-              <p className="mt-2 text-muted-foreground">No packaging types found</p>
-            </div>
-          ) : (
+          {/* Content */}
+          {loading ? (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {filteredItems.map((item) => (
-                <motion.div
-                  key={item.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="group"
-                >
-                  <Card className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-0 shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden">
-                    <CardContent className="p-4 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-blue-100 to-cyan-100 dark:from-blue-900/50 dark:to-cyan-900/50 flex items-center justify-center">
-                          <Box className="h-5 w-5 text-blue-600 dark:text-blue-400" />
-                        </div>
-                        <div>
-                          <span className="font-medium text-gray-800 dark:text-gray-100 capitalize">
-                            {item.name}
-                          </span>
-                          {item.createdAt && (
-                            <p className="text-xs text-muted-foreground">
-                              {new Date(item.createdAt).toLocaleDateString()}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
-                              onClick={() => openEditDialog(item)}
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Edit</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
-                              onClick={() => initiateDelete(item.id)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Delete</TooltipContent>
-                        </Tooltip>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
+              {[...Array(6)].map((_, i) => (
+                <Skeleton key={i} className="h-24 rounded-xl" />
               ))}
             </div>
+          ) : packagings.length === 0 ? (
+            <div className="py-16 text-center">
+              <Package className="mx-auto h-16 w-16 text-muted-foreground/40" />
+              <p className="mt-4 text-lg text-muted-foreground">
+                {search ? "No packagings match your search" : "No packaging types found"}
+              </p>
+              {!search && (
+                <Button
+                  variant="link"
+                  className="mt-2 text-indigo-600 dark:text-indigo-400"
+                  onClick={openCreateDialog}
+                >
+                  Create your first packaging
+                </Button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {packagings.map((item) => (
+                  <motion.div
+                    key={item.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.25 }}
+                    layout
+                  >
+                    <Card className="group bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-0 shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden">
+                      <CardContent className="p-5 flex items-center justify-between">
+                        <div className="flex items-center gap-4 min-w-0">
+                          <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-100 to-cyan-100 dark:from-blue-900/50 dark:to-cyan-900/50 flex items-center justify-center shrink-0">
+                            <Box className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="font-semibold text-gray-800 dark:text-gray-100 capitalize truncate">
+                              {item.name}
+                            </h3>
+                            {item.createdAt && (
+                              <p className="text-xs text-muted-foreground mt-0.5">
+                                Created {new Date(item.createdAt).toLocaleDateString()}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
+                                onClick={() => openEditDialog(item)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Edit</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
+                                onClick={() => initiateDelete(item)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Delete</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                ))}
+              </div>
+
+              {/* Pagination */}
+              {meta.totalPages > 1 && (
+                <div className="flex items-center justify-center pt-4">
+                  <Pagination>
+                    <PaginationContent>
+                      <PaginationItem>
+                        <PaginationPrevious
+                          onClick={() => handlePageChange(meta.currentPage - 1)}
+                          className={cn(
+                            meta.currentPage === 1 && "pointer-events-none opacity-50"
+                          )}
+                        />
+                      </PaginationItem>
+                      {Array.from({ length: meta.totalPages }, (_, i) => i + 1)
+                        .filter(
+                          (page) =>
+                            page === 1 ||
+                            page === meta.totalPages ||
+                            Math.abs(page - meta.currentPage) <= 1
+                        )
+                        .map((page, idx, arr) => (
+                          <div key={page} className="flex items-center">
+                            {idx > 0 && arr[idx - 1] !== page - 1 && (
+                              <PaginationItem>
+                                <span className="px-2 text-muted-foreground">...</span>
+                              </PaginationItem>
+                            )}
+                            <PaginationItem>
+                              <PaginationLink
+                                onClick={() => handlePageChange(page)}
+                                isActive={meta.currentPage === page}
+                              >
+                                {page}
+                              </PaginationLink>
+                            </PaginationItem>
+                          </div>
+                        ))}
+                      <PaginationItem>
+                        <PaginationNext
+                          onClick={() => handlePageChange(meta.currentPage + 1)}
+                          className={cn(
+                            meta.currentPage === meta.totalPages && "pointer-events-none opacity-50"
+                          )}
+                        />
+                      </PaginationItem>
+                    </PaginationContent>
+                  </Pagination>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -438,66 +459,74 @@ export default function PackagingPage(): JSX.Element {
           <DialogContent className="max-w-md border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-                {editingId ? "Edit Packaging" : "Add Packaging"}
+                {editingId ? "Edit Packaging" : "Create Packaging"}
               </DialogTitle>
               <DialogDescription>
                 {editingId
                   ? "Update the packaging type"
-                  : "Create a new packaging type"}
+                  : "Add a new packaging type to your catalog"}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label className="text-sm font-medium">Packaging Type *</Label>
-                <Select
-                  value={selectedType}
-                  onValueChange={setSelectedType}
-                >
-                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                    <SelectValue placeholder="Select a packaging type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PACKAGING_TYPES.map((type) => (
-                      <SelectItem key={type} value={type} className="capitalize">
-                        {type}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label className="text-sm font-medium">Packaging Name *</Label>
+                <Input
+                  placeholder="e.g., bottle, cardboard box"
+                  value={formName}
+                  onChange={(e) => setFormName(e.target.value)}
+                  className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                  autoFocus
+                />
               </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
             <DialogFooter>
               <Button
                 variant="outline"
-                onClick={handleDialogClose}
+                onClick={() => setDialogOpen(false)}
+                disabled={submitting}
                 className="border-slate-300 dark:border-slate-700"
               >
                 Cancel
               </Button>
               <Button
                 onClick={handleSubmit}
-                disabled={loading}
+                disabled={submitting}
                 className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white"
               >
-                {loading ? "Saving..." : editingId ? "Update" : "Create"}
+                {submitting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : editingId ? (
+                  "Update"
+                ) : (
+                  "Create"
+                )}
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
-        {/* Delete Confirmation with Undo */}
+        {/* Delete Confirmation with Countdown */}
         <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Delete Packaging</AlertDialogTitle>
               <AlertDialogDescription>
-                This packaging type will be permanently removed.
-                {deleteTimer > 0 && (
-                  <span className="block mt-2 text-amber-600 dark:text-amber-400">
-                    Undo available for {deleteTimer} second
-                    {deleteTimer !== 1 ? "s" : ""}...
-                  </span>
+                {deleteItem && (
+                  <>
+                    Permanently delete{" "}
+                    <strong className="capitalize">{deleteItem.name}</strong>?
+                    <br />
+                    {deleteTimer > 0 ? (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        Undo available in {deleteTimer}s...
+                      </span>
+                    ) : (
+                      <span className="text-destructive">
+                        No undo available. This action is immediate.
+                      </span>
+                    )}
+                  </>
                 )}
               </AlertDialogDescription>
             </AlertDialogHeader>
@@ -505,7 +534,11 @@ export default function PackagingPage(): JSX.Element {
               <AlertDialogCancel onClick={cancelDelete}>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 onClick={confirmDelete}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                disabled={deleteTimer > 0}
+                className={cn(
+                  "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+                  deleteTimer > 0 && "opacity-50 cursor-not-allowed"
+                )}
               >
                 Delete Now
               </AlertDialogAction>
