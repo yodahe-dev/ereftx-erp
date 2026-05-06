@@ -122,7 +122,7 @@ interface NewSaleItemForm {
 const CURRENCY = "ETB";
 const UNDO_TIMEOUT_SECONDS = 5;
 
-type DatePreset = "today" | "3d" | "7d" | "30d" | "90d" | "6m" | "12m" | "all";
+type DatePreset = "today" | "3d" | "7d" | "30d" | "90d" | "6m" | "12m" | "all" | "custom";
 const DATE_PRESETS: { label: string; value: DatePreset }[] = [
   { label: "Today", value: "today" },
   { label: "Last 3 Days", value: "3d" },
@@ -132,6 +132,7 @@ const DATE_PRESETS: { label: string; value: DatePreset }[] = [
   { label: "Last 6 Months", value: "6m" },
   { label: "Last Year", value: "12m" },
   { label: "All Time", value: "all" },
+  { label: "Custom Range", value: "custom" },
 ];
 
 // Safe numeric conversion
@@ -562,6 +563,8 @@ export default function SalesPage(): JSX.Element {
   const [filterPaymentType, setFilterPaymentType] = useState<"all" | "cash" | "credit">("all");
   const [filterPaymentStatus, setFilterPaymentStatus] = useState<"all" | "paid" | "pending">("all");
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -659,10 +662,19 @@ export default function SalesPage(): JSX.Element {
   }, [sales]);
 
   // Date filter
-  const isWithinDatePreset = (dateStr: string, preset: DatePreset) => {
-    if (preset === "all") return true;
+  const isWithinDatePreset = (dateStr: string, preset: DatePreset, customStart?: string, customEnd?: string) => {
     const d = new Date(dateStr);
     const now = new Date();
+    now.setHours(23, 59, 59, 999); // include whole day
+
+    if (preset === "custom" && customStart && customEnd) {
+      const start = new Date(customStart);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(customEnd);
+      end.setHours(23, 59, 59, 999);
+      return d >= start && d <= end;
+    }
+
     switch (preset) {
       case "today":
         return d.toDateString() === now.toDateString();
@@ -678,6 +690,8 @@ export default function SalesPage(): JSX.Element {
         return d >= new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
       case "12m":
         return d >= new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+      case "all":
+        return true;
       default:
         return true;
     }
@@ -695,9 +709,9 @@ export default function SalesPage(): JSX.Element {
     }
     if (filterPaymentType !== "all") f = f.filter((s) => s.paymentType === filterPaymentType);
     if (filterPaymentStatus !== "all") f = f.filter((s) => s.paymentStatus === filterPaymentStatus);
-    f = f.filter((s) => isWithinDatePreset(s.createdAt, datePreset));
+    f = f.filter((s) => isWithinDatePreset(s.createdAt, datePreset, customStartDate, customEndDate));
     return f;
-  }, [sales, search, filterPaymentType, filterPaymentStatus, datePreset]);
+  }, [sales, search, filterPaymentType, filterPaymentStatus, datePreset, customStartDate, customEndDate]);
 
   // Stats from filtered sales
   useEffect(() => {
@@ -959,12 +973,31 @@ export default function SalesPage(): JSX.Element {
                   <SelectItem value="pending">Pending</SelectItem>
                 </SelectContent>
               </Select>
-              <Select value={datePreset} onValueChange={(v) => setDatePreset(v as DatePreset)}>
-                <SelectTrigger className="w-[150px]"><Calendar className="mr-2 h-4 w-4" /><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {DATE_PRESETS.map((p) => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <div className="flex items-center gap-2">
+                <Select value={datePreset} onValueChange={(v) => setDatePreset(v as DatePreset)}>
+                  <SelectTrigger className="w-[150px]"><Calendar className="mr-2 h-4 w-4" /><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {DATE_PRESETS.map((p) => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                {datePreset === "custom" && (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="date"
+                      value={customStartDate}
+                      onChange={(e) => setCustomStartDate(e.target.value)}
+                      className="w-[140px] h-8 text-xs"
+                    />
+                    <span className="text-xs text-muted-foreground">to</span>
+                    <Input
+                      type="date"
+                      value={customEndDate}
+                      onChange={(e) => setCustomEndDate(e.target.value)}
+                      className="w-[140px] h-8 text-xs"
+                    />
+                  </div>
+                )}
+              </div>
               <Badge variant="secondary" className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700">
                 {filteredSales.length} sales
               </Badge>
