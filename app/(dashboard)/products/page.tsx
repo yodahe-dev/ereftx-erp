@@ -1,6 +1,6 @@
 "use client";
 
-import React, { JSX, useEffect, useMemo, useState, useRef } from "react";
+import React, { JSX, useEffect, useState, useRef, useCallback } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +48,19 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Trash2,
@@ -64,9 +77,14 @@ import {
   Tag,
   Layers,
   Archive,
+  ChevronLeft,
+  ChevronRight as ChevronRightIcon,
+  Check,
+  ChevronsUpDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 // ==================== TYPES ====================
 interface ProductPrice {
@@ -92,10 +110,9 @@ interface Brand {
   category?: Category;
 }
 
-// Backend Packaging model uses "name", not "type"
 interface Packaging {
   id: string;
-  name: string;        // e.g., "bottle", "can", "plastic"
+  name: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -107,25 +124,34 @@ interface Product {
   unitsPerBox: number;
   brandId: string;
   packagingId: string;
-  brand?: {
-    id: string;
-    name: string;
-    category?: Category;
-  };
-  packaging?: {
-    id: string;
-    name: string;      // backend returns "name"
-  };
+  brand?: { id: string; name: string; category?: Category };
+  packaging?: { id: string; name: string };
   prices?: ProductPrice[];
   createdAt?: string;
   updatedAt?: string;
 }
 
+interface PaginationMeta {
+  totalItems: number;
+  totalPages: number;
+  currentPage: number;
+  limit: number;
+}
+
 // ==================== CONSTANTS ====================
 const DEFAULT_UNITS_PER_BOX = 24;
 const CURRENCY = "ETB";
-const PRODUCTS_PAGE_SIZE = 20;
+const PRODUCTS_PAGE_LIMIT = 10;
+const ENTITIES_PAGE_LIMIT = 10;
 const UNDO_SECONDS = 10;
+
+const formatNumber = (value: number | string) => {
+  const num = Number(value) || 0;
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(num);
+};
 
 export default function ProductPage(): JSX.Element {
   // ---------- Data states ----------
@@ -137,11 +163,27 @@ export default function ProductPage(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
-  const [hasMore, setHasMore] = useState(true);
-  const [page, setPage] = useState(1);
+
+  // ---------- Products pagination ----------
+  const [productsMeta, setProductsMeta] = useState<PaginationMeta>({
+    totalItems: 0,
+    totalPages: 1,
+    currentPage: 1,
+    limit: PRODUCTS_PAGE_LIMIT,
+  });
+  const [productSearch, setProductSearch] = useState("");
+
+  // ---------- Entity management pagination ----------
+  const [entityMeta, setEntityMeta] = useState<PaginationMeta>({
+    totalItems: 0,
+    totalPages: 1,
+    currentPage: 1,
+    limit: ENTITIES_PAGE_LIMIT,
+  });
+  const [entitySearch, setEntitySearch] = useState("");
 
   // ---------- UI filters ----------
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(productSearch);
 
   // ---------- Product form dialog ----------
   const [formDialogOpen, setFormDialogOpen] = useState(false);
@@ -175,97 +217,80 @@ export default function ProductPage(): JSX.Element {
     categoryId: "",
   });
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
-  const [entitySearch, setEntitySearch] = useState("");
   const [entityLoading, setEntityLoading] = useState(false);
+  const [entityPage, setEntityPage] = useState(1);
 
   // ---------- Expandable rows ----------
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
-  // Infinite scroll
-  const observerRef = useRef<IntersectionObserver | null>(null);
-  const lastProductElementRef = useRef<HTMLTableRowElement | null>(null);
-
-  // ==================== FETCH PRODUCTS (PAGINATED) ====================
-  const fetchProducts = async (pageNum: number, reset = false) => {
-    try {
+  // ==================== FETCH PRODUCTS ====================
+  const fetchProducts = useCallback(
+    async (page = 1, searchTerm = search) => {
       setLoading(true);
       setError(null);
-      const params = new URLSearchParams();
-      params.append("page", pageNum.toString());
-      params.append("limit", PRODUCTS_PAGE_SIZE.toString());
-      if (search) params.append("search", search);
+      try {
+        const params = new URLSearchParams();
+        params.append("page", page.toString());
+        params.append("limit", productsMeta.limit.toString());
+        if (searchTerm) params.append("search", searchTerm);
 
-      const response = await api.get<{
-        data: Product[];
-        page: number;
-        hasMore: boolean;
-        total: number;
-      }>(`/products?${params.toString()}`);
-      const { data, hasMore: more, page: currentPage } = response.data;
-      const productsData = Array.isArray(data) ? data : [];
-      setProducts((prev) => (reset ? productsData : [...prev, ...productsData]));
-      setHasMore(more);
-      setPage(currentPage);
-    } catch (e) {
-      const message =
-        (e as { response?: { data?: { message?: string } } })?.response?.data
-          ?.message || "Failed to load products";
-      setError(message);
-      toast.error(message);
-    } finally {
-      setLoading(false);
-      setInitialLoading(false);
-    }
-  };
+        const res = await api.get<{
+          data: Product[];
+          page: number;
+          hasMore: boolean;
+          total: number;
+        }>(`/products?${params.toString()}`);
+
+        const { data, total } = res.data;
+        setProducts(Array.isArray(data) ? data : []);
+        setProductsMeta((prev) => ({
+          ...prev,
+          totalItems: total,
+          totalPages: Math.ceil(total / prev.limit),
+          currentPage: page,
+        }));
+      } catch (e: any) {
+        const msg = e?.response?.data?.message || "Failed to load products";
+        setError(msg);
+        toast.error(msg);
+      } finally {
+        setLoading(false);
+        setInitialLoading(false);
+      }
+    },
+    [productsMeta.limit, search] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  // Initial fetch
+  useEffect(() => {
+    fetchProducts(1, search);
+  }, [fetchProducts]);
+
+  // Re-fetch when search changes
+  useEffect(() => {
+    setProductSearch(search);
+    fetchProducts(1, search);
+  }, [search, fetchProducts]);
 
   // ==================== FETCH SUPPORTING DATA ====================
   const fetchSupportingData = async () => {
     try {
       const [c, b, pkg] = await Promise.all([
-        api.get<Category[]>("/categories"),
-        api.get<Brand[]>("/brands"),
-        api.get<Packaging[]>("/packagings"),
+        api.get("/categories"),
+        api.get("/brands"),
+        api.get("/packagings"),
       ]);
-      setCategories(Array.isArray(c.data) ? c.data : []);
-      setBrands(Array.isArray(b.data) ? b.data : []);
-      setPackagings(Array.isArray(pkg.data) ? pkg.data : []);
+      setCategories(Array.isArray(c.data.data) ? c.data.data : Array.isArray(c.data) ? c.data : []);
+      setBrands(Array.isArray(b.data.data) ? b.data.data : Array.isArray(b.data) ? b.data : []);
+      setPackagings(Array.isArray(pkg.data.data) ? pkg.data.data : Array.isArray(pkg.data) ? pkg.data : []);
     } catch (e) {
-      console.error("Failed to fetch supporting data", e);
+      console.error("Failed to load supporting data", e);
     }
   };
 
   useEffect(() => {
-    fetchProducts(1, true);
     fetchSupportingData();
   }, []);
-
-  useEffect(() => {
-    setProducts([]);
-    setPage(1);
-    setHasMore(true);
-    fetchProducts(1, true);
-  }, [search]);
-
-  useEffect(() => {
-    if (observerRef.current) observerRef.current.disconnect();
-
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && hasMore && !loading && !initialLoading) {
-          fetchProducts(page + 1, false);
-        }
-      },
-      { threshold: 0.1 }
-    );
-
-    if (lastProductElementRef.current) {
-      observerRef.current.observe(lastProductElementRef.current);
-    }
-
-    return () => {
-      if (observerRef.current) observerRef.current.disconnect();
-    };
-  }, [hasMore, loading, initialLoading, page, products.length]);
 
   // ==================== HELPERS ====================
   const getLatestPrice = (product: Product) => {
@@ -336,7 +361,6 @@ export default function ProductPage(): JSX.Element {
     try {
       setLoading(true);
       if (editingId) {
-        // Update basic info
         await api.put(`/products/${editingId}`, {
           name: payload.name,
           description: payload.description,
@@ -344,7 +368,6 @@ export default function ProductPage(): JSX.Element {
           packagingId: payload.packagingId,
           unitsPerBox: payload.unitsPerBox,
         });
-        // If price changed, add new price version
         const currentProduct = products.find((p) => p.id === editingId);
         const latest = currentProduct ? getLatestPrice(currentProduct) : null;
         const priceChanged =
@@ -368,17 +391,10 @@ export default function ProductPage(): JSX.Element {
       }
       setFormDialogOpen(false);
       resetProductForm();
-      // Reset list
-      setProducts([]);
-      setPage(1);
-      setHasMore(true);
-      fetchProducts(1, true);
-      fetchSupportingData();
-    } catch (e) {
-      const message =
-        (e as { response?: { data?: { message?: string } } })?.response?.data
-          ?.message || "Failed to save product";
-      toast.error(message);
+      await fetchProducts(productsMeta.currentPage);
+      await fetchSupportingData();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || "Failed to save product");
     } finally {
       setLoading(false);
     }
@@ -394,18 +410,12 @@ export default function ProductPage(): JSX.Element {
   const startProductDeletion = async () => {
     if (!productToDelete) return;
 
-    // Backup product data for undo
     const backup = { ...productToDelete };
     setDeletedProductBackup(backup);
-
-    // Remove from UI immediately
     setProducts((prev) => prev.filter((p) => p.id !== productToDelete.id));
-
-    // Close confirmation dialog
     setDeleteAlertOpen(false);
     setProductToDelete(null);
 
-    // Show undo toast (bottom-left) with timer
     toast("Product deleted", {
       description: `You can undo this action within ${UNDO_SECONDS} seconds.`,
       duration: UNDO_SECONDS * 1000,
@@ -413,9 +423,7 @@ export default function ProductPage(): JSX.Element {
       action: {
         label: "Undo",
         onClick: async () => {
-          // Cancel pending delete
           if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
-          // Restore product
           if (deletedProductBackup) {
             try {
               const latest = getLatestPrice(deletedProductBackup);
@@ -431,11 +439,7 @@ export default function ProductPage(): JSX.Element {
                 allowLoss: latest.allowLoss,
               });
               toast.success("Product restored");
-              // Refresh list
-              setProducts([]);
-              setPage(1);
-              setHasMore(true);
-              fetchProducts(1, true);
+              await fetchProducts(productsMeta.currentPage);
             } catch (e) {
               toast.error("Failed to restore product");
             }
@@ -445,27 +449,49 @@ export default function ProductPage(): JSX.Element {
       },
     });
 
-    // Schedule actual deletion after UNDO_SECONDS
     undoTimeoutRef.current = setTimeout(async () => {
       try {
         await api.delete(`/products/${productToDelete.id}`);
-      } catch (e) {
-        // Product may have been restored already – ignore
-      } finally {
-        if (undoTimeoutRef.current) undoTimeoutRef.current = null;
-      }
+      } catch (e) {}
+      if (undoTimeoutRef.current) undoTimeoutRef.current = null;
     }, UNDO_SECONDS * 1000);
   };
 
   // ==================== ENTITY CRUD ====================
-  const getEntityEndpoint = (): string => {
-    switch (activeEntityTab) {
-      case "category":
-        return "/categories";
-      case "brand":
-        return "/brands";
-      case "packaging":
-        return "/packagings";
+  const fetchEntities = async (
+    tab: typeof activeEntityTab,
+    page = 1,
+    searchTerm = entitySearch
+  ) => {
+    const endpoint =
+      tab === "category"
+        ? "/categories"
+        : tab === "brand"
+        ? "/brands"
+        : "/packagings";
+    try {
+      setEntityLoading(true);
+      const res = await api.get<{ data: any[]; meta: PaginationMeta }>(
+        `${endpoint}?page=${page}&limit=${entityMeta.limit}&search=${encodeURIComponent(searchTerm)}`
+      );
+      setEntityMeta(res.data.meta);
+      setEntityPage(page);
+      // Update the appropriate state array
+      switch (tab) {
+        case "category":
+          setCategories(res.data.data);
+          break;
+        case "brand":
+          setBrands(res.data.data);
+          break;
+        case "packaging":
+          setPackagings(res.data.data);
+          break;
+      }
+    } catch (e) {
+      toast.error(`Failed to load ${tab}s`);
+    } finally {
+      setEntityLoading(false);
     }
   };
 
@@ -475,15 +501,19 @@ export default function ProductPage(): JSX.Element {
   };
 
   const handleEntitySubmit = async () => {
-    const endpoint = getEntityEndpoint();
-    let payload: any;
+    const endpoint =
+      activeEntityTab === "category"
+        ? "/categories"
+        : activeEntityTab === "brand"
+        ? "/brands"
+        : "/packagings";
 
+    let payload: any;
     if (activeEntityTab === "packaging") {
       if (!entityForm.type) {
         toast.error("Packaging type is required");
         return;
       }
-      // Backend expects { type } and returns { name }
       payload = { type: entityForm.type };
     } else if (activeEntityTab === "brand") {
       if (!entityForm.name || !entityForm.categoryId) {
@@ -509,10 +539,10 @@ export default function ProductPage(): JSX.Element {
         toast.success(`${activeEntityTab} created`);
       }
       resetEntityForm();
-      await fetchSupportingData();
+      await fetchEntities(activeEntityTab, entityPage, entitySearch);
+      await fetchSupportingData(); // refresh dropdowns
     } catch (e: any) {
-      const msg = e?.response?.data?.message || `Failed to save ${activeEntityTab}`;
-      toast.error(msg);
+      toast.error(e?.response?.data?.message || `Failed to save ${activeEntityTab}`);
     } finally {
       setEntityLoading(false);
     }
@@ -521,7 +551,6 @@ export default function ProductPage(): JSX.Element {
   const handleEditEntity = (item: Category | Brand | Packaging) => {
     setEditingEntityId(item.id);
     if (activeEntityTab === "packaging") {
-      // Packaging API returns { name }, we map to form.type for display/update
       const pkg = item as Packaging;
       setEntityForm({ name: "", type: pkg.name, categoryId: "" });
     } else if (activeEntityTab === "brand") {
@@ -535,26 +564,23 @@ export default function ProductPage(): JSX.Element {
   const handleDeleteEntity = async (id: string) => {
     if (!confirm(`Delete this ${activeEntityTab}?`)) return;
     try {
-      await api.delete(`${getEntityEndpoint()}/${id}`);
+      await api.delete(`/${
+        activeEntityTab === "category" ? "categories" : activeEntityTab === "brand" ? "brands" : "packagings"
+      }/${id}`);
       toast.success(`${activeEntityTab} deleted`);
+      await fetchEntities(activeEntityTab, entityPage, entitySearch);
       await fetchSupportingData();
     } catch (e: any) {
       toast.error(e?.response?.data?.message || `Failed to delete ${activeEntityTab}`);
     }
   };
 
-  // Filtered entities – safe using .name for packaging
-  const filteredEntities = useMemo(() => {
-    const searchLower = entitySearch.toLowerCase();
-    if (activeEntityTab === "category") {
-      return categories.filter((c) => c.name.toLowerCase().includes(searchLower));
-    } else if (activeEntityTab === "brand") {
-      return brands.filter((b) => b.name.toLowerCase().includes(searchLower));
-    } else {
-      // Packaging uses .name
-      return packagings.filter((p) => (p.name || "").toLowerCase().includes(searchLower));
-    }
-  }, [activeEntityTab, categories, brands, packagings, entitySearch]);
+  // Filtered entities for display within entity dialog
+  const entityList = activeEntityTab === "category"
+    ? categories
+    : activeEntityTab === "brand"
+    ? brands
+    : packagings;
 
   const toggleRowExpanded = (id: string) => {
     setExpandedRows((prev) => {
@@ -563,6 +589,115 @@ export default function ProductPage(): JSX.Element {
       else next.add(id);
       return next;
     });
+  };
+
+  // ==================== COMBOBOX FOR BRAND & PACKAGING ====================
+  // States for brand combobox
+  const [brandComboboxOpen, setBrandComboboxOpen] = useState(false);
+  const [brandComboboxSearch, setBrandComboboxSearch] = useState("");
+  const [brandComboboxList, setBrandComboboxList] = useState<Brand[]>([]);
+  const [brandComboboxMeta, setBrandComboboxMeta] = useState<PaginationMeta>({
+    totalItems: 0,
+    totalPages: 1,
+    currentPage: 1,
+    limit: 20,
+  });
+  const [brandComboboxLoading, setBrandComboboxLoading] = useState(false);
+
+  // States for packaging combobox
+  const [packagingComboboxOpen, setPackagingComboboxOpen] = useState(false);
+  const [packagingComboboxSearch, setPackagingComboboxSearch] = useState("");
+  const [packagingComboboxList, setPackagingComboboxList] = useState<Packaging[]>([]);
+  const [packagingComboboxMeta, setPackagingComboboxMeta] = useState<PaginationMeta>({
+    totalItems: 0,
+    totalPages: 1,
+    currentPage: 1,
+    limit: 20,
+  });
+  const [packagingComboboxLoading, setPackagingComboboxLoading] = useState(false);
+
+  // Fetch brands for combobox
+  const fetchBrandCombobox = async (page = 1, search = brandComboboxSearch) => {
+    setBrandComboboxLoading(true);
+    try {
+      const res = await api.get<{ data: Brand[]; meta: PaginationMeta }>(
+        `/brands?page=${page}&limit=${brandComboboxMeta.limit}&search=${encodeURIComponent(search)}`
+      );
+      if (page === 1) {
+        setBrandComboboxList(res.data.data);
+      } else {
+        setBrandComboboxList((prev) => [...prev, ...res.data.data]);
+      }
+      setBrandComboboxMeta(res.data.meta);
+      setBrandComboboxMeta((prev) => ({ ...prev, currentPage: page }));
+    } catch (e) {
+      toast.error("Failed to load brands");
+    } finally {
+      setBrandComboboxLoading(false);
+    }
+  };
+
+  // Fetch packaging for combobox
+  const fetchPackagingCombobox = async (page = 1, search = packagingComboboxSearch) => {
+    setPackagingComboboxLoading(true);
+    try {
+      const res = await api.get<{ data: Packaging[]; meta: PaginationMeta }>(
+        `/packagings?page=${page}&limit=${packagingComboboxMeta.limit}&search=${encodeURIComponent(search)}`
+      );
+      if (page === 1) {
+        setPackagingComboboxList(res.data.data);
+      } else {
+        setPackagingComboboxList((prev) => [...prev, ...res.data.data]);
+      }
+      setPackagingComboboxMeta(res.data.meta);
+      setPackagingComboboxMeta((prev) => ({ ...prev, currentPage: page }));
+    } catch (e) {
+      toast.error("Failed to load packagings");
+    } finally {
+      setPackagingComboboxLoading(false);
+    }
+  };
+
+  // Load initial brand/packaging when combobox opens
+  useEffect(() => {
+    if (brandComboboxOpen) {
+      setBrandComboboxSearch("");
+      fetchBrandCombobox(1, "");
+    }
+  }, [brandComboboxOpen]);
+
+  useEffect(() => {
+    if (packagingComboboxOpen) {
+      setPackagingComboboxSearch("");
+      fetchPackagingCombobox(1, "");
+    }
+  }, [packagingComboboxOpen]);
+
+  // Handle search change for brand
+  const handleBrandSearchChange = (value: string) => {
+    setBrandComboboxSearch(value);
+    fetchBrandCombobox(1, value);
+  };
+
+  // Handle search change for packaging
+  const handlePackagingSearchChange = (value: string) => {
+    setPackagingComboboxSearch(value);
+    fetchPackagingCombobox(1, value);
+  };
+
+  // Load more function
+  const loadMoreBrands = () => {
+    const nextPage = brandComboboxMeta.currentPage + 1;
+    if (nextPage <= brandComboboxMeta.totalPages) {
+      fetchBrandCombobox(nextPage, brandComboboxSearch);
+    }
+  };
+
+  const loadMorePackagings = () => {
+    const nextPage = packagingComboboxMeta.currentPage + 1;
+    if (nextPage <= packagingComboboxMeta.totalPages) {
+      fetchPackagingCombobox(nextPage, packagingComboboxSearch);
+    }
   };
 
   // ==================== RENDER ====================
@@ -593,14 +728,17 @@ export default function ProductPage(): JSX.Element {
               </h1>
               <p className="text-sm text-muted-foreground mt-1 flex items-center gap-1">
                 <Sparkles className="h-3 w-3 text-amber-500" />
-                Manage products, pricing, categories, brands, and packaging
+                Manage products, pricing, and master data
               </p>
             </div>
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setEntityDialogOpen(true)}
+                onClick={() => {
+                  setEntityDialogOpen(true);
+                  fetchEntities(activeEntityTab, 1, "");
+                }}
                 className="shadow-sm border-indigo-200 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-950"
               >
                 <Settings className="mr-2 h-4 w-4" /> Manage Entities
@@ -614,7 +752,7 @@ export default function ProductPage(): JSX.Element {
             </div>
           </motion.div>
 
-          {/* Stats Cards */}
+          {/* Stats */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -626,7 +764,7 @@ export default function ProductPage(): JSX.Element {
                 <div>
                   <p className="text-sm font-medium text-muted-foreground">Total Products</p>
                   <p className="text-3xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-                    {products.length}
+                    {productsMeta.totalItems}
                   </p>
                 </div>
                 <Package className="h-8 w-8 text-indigo-500 opacity-80" />
@@ -673,7 +811,7 @@ export default function ProductPage(): JSX.Element {
               variant="secondary"
               className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
             >
-              {products.length} products
+              {productsMeta.totalItems} products
             </Badge>
             <div className="relative w-full sm:w-72">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -686,7 +824,7 @@ export default function ProductPage(): JSX.Element {
             </div>
           </div>
 
-          {/* Error display */}
+          {/* Error */}
           <AnimatePresence>
             {error && (
               <motion.div
@@ -701,222 +839,242 @@ export default function ProductPage(): JSX.Element {
             )}
           </AnimatePresence>
 
-          {/* Product Table */}
+          {/* Products Table */}
           <Card className="overflow-hidden border-0 shadow-xl bg-white/70 dark:bg-slate-900/70 backdrop-blur-md">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 border-b-2 border-slate-300 dark:border-slate-600">
-                  <TableHead className="w-8"></TableHead>
-                  <TableHead>Product</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Brand</TableHead>
-                  <TableHead className="text-right">Buy/Box</TableHead>
-                  <TableHead className="text-right">Sell/Box</TableHead>
-                  <TableHead className="text-right">Sell/Unit</TableHead>
-                  <TableHead className="w-24"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {products.length === 0 && !loading ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="h-32 text-center">
-                      <div className="flex flex-col items-center gap-2">
-                        <Package className="h-12 w-12 text-muted-foreground/50" />
-                        <p className="text-muted-foreground">No products found.</p>
-                      </div>
-                    </TableCell>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 border-b-2 border-slate-300 dark:border-slate-600">
+                    <TableHead className="w-8"></TableHead>
+                    <TableHead>Product</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead>Brand</TableHead>
+                    <TableHead className="text-right">Buy/Box</TableHead>
+                    <TableHead className="text-right">Sell/Box</TableHead>
+                    <TableHead className="text-right">Sell/Unit</TableHead>
+                    <TableHead className="w-24"></TableHead>
                   </TableRow>
-                ) : (
-                  products.map((product, index) => {
-                    const isExpanded = expandedRows.has(product.id);
-                    const isLast = index === products.length - 1;
-                    const latest = getLatestPrice(product);
-
-                    return (
-                      <React.Fragment key={product.id}>
-                        <TableRow
-                          ref={isLast ? lastProductElementRef : null}
-                          className="group cursor-pointer transition-all duration-200 hover:bg-gradient-to-r hover:from-indigo-50/50 hover:to-purple-50/50 dark:hover:from-indigo-950/30 dark:hover:to-purple-950/30"
-                          onClick={() => toggleRowExpanded(product.id)}
-                        >
-                          <TableCell>
-                            <motion.span
-                              animate={{ rotate: isExpanded ? 90 : 0 }}
-                              transition={{ duration: 0.2 }}
-                              className="inline-block"
-                            >
-                              <ChevronRight className="h-4 w-4" />
-                            </motion.span>
-                          </TableCell>
-                          <TableCell className="font-medium">
-                            <div className="flex items-center gap-2">
-                              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-100 to-purple-100 dark:from-indigo-900/50 dark:to-purple-900/50 flex items-center justify-center">
-                                <Package className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
-                              </div>
-                              {product.name}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            {product.brand?.category?.name ?? "—"}
-                          </TableCell>
-                          <TableCell>{product.brand?.name ?? "—"}</TableCell>
-                          <TableCell className="text-right font-mono text-blue-600">
-                            {latest.buyPricePerBox.toFixed(2)} {CURRENCY}
-                          </TableCell>
-                          <TableCell className="text-right font-mono text-emerald-600">
-                            {latest.sellPricePerBox.toFixed(2)} {CURRENCY}
-                          </TableCell>
-                          <TableCell className="text-right font-mono text-emerald-600">
-                            {latest.sellPricePerUnit.toFixed(2)} {CURRENCY}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openProductForm(product);
-                                    }}
-                                  >
-                                    <Pencil className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Edit</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      confirmDeleteProduct(product);
-                                    }}
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Delete</TooltipContent>
-                              </Tooltip>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                        {isExpanded && (
-                          <TableRow className="bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800/50 dark:to-slate-900/50">
-                            <TableCell colSpan={8} className="p-0">
-                              <motion.div
-                                initial={{ opacity: 0, height: 0 }}
-                                animate={{ opacity: 1, height: "auto" }}
-                                exit={{ opacity: 0, height: 0 }}
-                                className="px-6 py-5"
+                </TableHeader>
+                <TableBody>
+                  {products.length === 0 && !loading ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="h-32 text-center">
+                        <div className="flex flex-col items-center gap-2">
+                          <Package className="h-12 w-12 text-muted-foreground/50" />
+                          <p className="text-muted-foreground">No products found.</p>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    products.map((product) => {
+                      const isExpanded = expandedRows.has(product.id);
+                      const latest = getLatestPrice(product);
+                      return (
+                        <React.Fragment key={product.id}>
+                          <TableRow
+                            className="group cursor-pointer transition-all duration-200 hover:bg-gradient-to-r hover:from-indigo-50/50 hover:to-purple-50/50 dark:hover:from-indigo-950/30 dark:hover:to-purple-950/30"
+                            onClick={() => toggleRowExpanded(product.id)}
+                          >
+                            <TableCell>
+                              <motion.span
+                                animate={{ rotate: isExpanded ? 90 : 0 }}
+                                transition={{ duration: 0.2 }}
+                                className="inline-block"
                               >
-                                <div className="grid gap-6 md:grid-cols-2">
-                                  <div className="space-y-3">
-                                    <div className="flex items-center gap-2">
-                                      <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center">
-                                        <Package className="h-4 w-4 text-white" />
-                                      </div>
-                                      <h4 className="font-semibold text-indigo-700 dark:text-indigo-300">
-                                        Product Details
-                                      </h4>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-white/50 dark:bg-slate-900/50 rounded-xl p-3 backdrop-blur-sm">
-                                      <span className="text-muted-foreground">Units/Box:</span>
-                                      <span className="font-mono font-medium">
-                                        {product.unitsPerBox}
-                                      </span>
-                                      <span className="text-muted-foreground">Packaging:</span>
-                                      <span className="capitalize">
-                                        {product.packaging?.name ?? "—"}
-                                      </span>
-                                      <span className="text-muted-foreground">Allow Loss:</span>
-                                      <span>{latest.allowLoss ? "Yes" : "No"}</span>
-                                      <span className="text-muted-foreground">Created:</span>
-                                      <span>
-                                        {product.createdAt
-                                          ? new Date(product.createdAt).toLocaleDateString()
-                                          : "—"}
-                                      </span>
-                                    </div>
-                                  </div>
-                                  <div className="space-y-3">
-                                    <div className="flex items-center gap-2">
-                                      <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
-                                        <Clock className="h-4 w-4 text-white" />
-                                      </div>
-                                      <h4 className="font-semibold text-purple-700 dark:text-purple-300">
-                                        Price History
-                                      </h4>
-                                    </div>
-                                    <div className="max-h-40 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                                      {product.prices && product.prices.length > 0 ? (
-                                        <table className="w-full text-xs">
-                                          <thead>
-                                            <tr className="bg-slate-100 dark:bg-slate-800 text-muted-foreground">
-                                              <th className="text-left px-3 py-2">From</th>
-                                              <th className="text-left px-3 py-2">To</th>
-                                              <th className="text-left px-3 py-2">Buy/Box</th>
-                                              <th className="text-left px-3 py-2">Sell/Box</th>
-                                              <th className="text-left px-3 py-2">Sell/Unit</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {product.prices.map((price) => (
-                                              <tr
-                                                key={price.id}
-                                                className="border-t border-slate-100 dark:border-slate-800"
-                                              >
-                                                <td className="px-3 py-2">
-                                                  {new Date(price.startAt).toLocaleDateString()}
-                                                </td>
-                                                <td className="px-3 py-2">
-                                                  {price.endAt
-                                                    ? new Date(price.endAt).toLocaleDateString()
-                                                    : "Current"}
-                                                </td>
-                                                <td className="px-3 py-2">
-                                                  {Number(price.buyPricePerBox).toFixed(2)} {CURRENCY}
-                                                </td>
-                                                <td className="px-3 py-2">
-                                                  {Number(price.sellPricePerBox).toFixed(2)} {CURRENCY}
-                                                </td>
-                                                <td className="px-3 py-2">
-                                                  {Number(price.sellPricePerUnit).toFixed(2)} {CURRENCY}
-                                                </td>
-                                              </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
-                                      ) : (
-                                        <p className="p-3 text-center text-muted-foreground">
-                                          No price history
-                                        </p>
-                                      )}
-                                    </div>
-                                  </div>
+                                <ChevronRight className="h-4 w-4" />
+                              </motion.span>
+                            </TableCell>
+                            <TableCell className="font-medium">
+                              <div className="flex items-center gap-2">
+                                <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-100 to-purple-100 dark:from-indigo-900/50 dark:to-purple-900/50 flex items-center justify-center">
+                                  <Package className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
                                 </div>
-                              </motion.div>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="max-w-[180px] truncate block">
+                                      {product.name}
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>{product.name}</TooltipContent>
+                                </Tooltip>
+                              </div>
+                            </TableCell>
+                            <TableCell>{product.brand?.category?.name ?? "—"}</TableCell>
+                            <TableCell>{product.brand?.name ?? "—"}</TableCell>
+                            <TableCell className="text-right font-mono text-blue-600 whitespace-nowrap">
+                              {formatNumber(latest.buyPricePerBox)} {CURRENCY}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-emerald-600 whitespace-nowrap">
+                              {formatNumber(latest.sellPricePerBox)} {CURRENCY}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-emerald-600 whitespace-nowrap">
+                              {formatNumber(latest.sellPricePerUnit)} {CURRENCY}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        openProductForm(product);
+                                      }}
+                                    >
+                                      <Pencil className="h-4 w-4" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Edit</TooltipContent>
+                                </Tooltip>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        confirmDeleteProduct(product);
+                                      }}
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Delete</TooltipContent>
+                                </Tooltip>
+                              </div>
                             </TableCell>
                           </TableRow>
-                        )}
-                      </React.Fragment>
-                    );
-                  })
-                )}
-                {loading && (
-                  <TableRow>
-                    <TableCell colSpan={8} className="h-20 text-center">
-                      <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
+                          {isExpanded && (
+                            <TableRow className="bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800/50 dark:to-slate-900/50">
+                              <TableCell colSpan={8} className="p-0">
+                                <motion.div
+                                  initial={{ opacity: 0, height: 0 }}
+                                  animate={{ opacity: 1, height: "auto" }}
+                                  exit={{ opacity: 0, height: 0 }}
+                                  className="px-6 py-5"
+                                >
+                                  <div className="grid gap-6 md:grid-cols-2">
+                                    <div className="space-y-3">
+                                      <div className="flex items-center gap-2">
+                                        <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center">
+                                          <Package className="h-4 w-4 text-white" />
+                                        </div>
+                                        <h4 className="font-semibold text-indigo-700 dark:text-indigo-300">
+                                          Product Details
+                                        </h4>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-white/50 dark:bg-slate-900/50 rounded-xl p-3 backdrop-blur-sm">
+                                        <span className="text-muted-foreground">Units/Box:</span>
+                                        <span className="font-mono font-medium">{product.unitsPerBox}</span>
+                                        <span className="text-muted-foreground">Packaging:</span>
+                                        <span className="capitalize">{product.packaging?.name ?? "—"}</span>
+                                        <span className="text-muted-foreground">Allow Loss:</span>
+                                        <span>{latest.allowLoss ? "Yes" : "No"}</span>
+                                        <span className="text-muted-foreground">Created:</span>
+                                        <span>{product.createdAt ? new Date(product.createdAt).toLocaleDateString() : "—"}</span>
+                                      </div>
+                                    </div>
+                                    <div className="space-y-3">
+                                      <div className="flex items-center gap-2">
+                                        <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
+                                          <Clock className="h-4 w-4 text-white" />
+                                        </div>
+                                        <h4 className="font-semibold text-purple-700 dark:text-purple-300">
+                                          Price History
+                                        </h4>
+                                      </div>
+                                      <div className="max-h-40 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                                        {product.prices && product.prices.length > 0 ? (
+                                          <table className="w-full text-xs">
+                                            <thead>
+                                              <tr className="bg-slate-100 dark:bg-slate-800 text-muted-foreground">
+                                                <th className="text-left px-3 py-2">From</th>
+                                                <th className="text-left px-3 py-2">To</th>
+                                                <th className="text-left px-3 py-2">Buy/Box</th>
+                                                <th className="text-left px-3 py-2">Sell/Box</th>
+                                                <th className="text-left px-3 py-2">Sell/Unit</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {product.prices.map((price) => (
+                                                <tr key={price.id} className="border-t border-slate-100 dark:border-slate-800">
+                                                  <td className="px-3 py-2">{new Date(price.startAt).toLocaleDateString()}</td>
+                                                  <td className="px-3 py-2">{price.endAt ? new Date(price.endAt).toLocaleDateString() : "Current"}</td>
+                                                  <td className="px-3 py-2">{formatNumber(price.buyPricePerBox)} {CURRENCY}</td>
+                                                  <td className="px-3 py-2">{formatNumber(price.sellPricePerBox)} {CURRENCY}</td>
+                                                  <td className="px-3 py-2">{formatNumber(price.sellPricePerUnit)} {CURRENCY}</td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        ) : (
+                                          <p className="p-3 text-center text-muted-foreground">No price history</p>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </motion.div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </React.Fragment>
+                      );
+                    })
+                  )}
+                  {loading && (
+                    <TableRow>
+                      <TableCell colSpan={8} className="h-20 text-center">
+                        <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            {/* Products Pagination */}
+            {productsMeta.totalPages > 1 && (
+              <div className="flex items-center justify-center gap-2 p-4 border-t border-slate-200 dark:border-slate-700 bg-white/40 dark:bg-slate-900/40 backdrop-blur-sm">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={productsMeta.currentPage === 1}
+                  onClick={() => fetchProducts(productsMeta.currentPage - 1)}
+                >
+                  <ChevronLeft className="h-4 w-4 mr-1" /> Prev
+                </Button>
+                <div className="flex gap-1">
+                  {Array.from({ length: productsMeta.totalPages }, (_, i) => i + 1)
+                    .filter((p) => p === 1 || p === productsMeta.totalPages || Math.abs(p - productsMeta.currentPage) <= 1)
+                    .map((p) => (
+                      <Button
+                        key={p}
+                        variant={productsMeta.currentPage === p ? "default" : "ghost"}
+                        size="sm"
+                        onClick={() => fetchProducts(p)}
+                        className={
+                          productsMeta.currentPage === p
+                            ? "bg-indigo-600 text-white"
+                            : ""
+                        }
+                      >
+                        {p}
+                      </Button>
+                    ))}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={productsMeta.currentPage === productsMeta.totalPages}
+                  onClick={() => fetchProducts(productsMeta.currentPage + 1)}
+                >
+                  Next <ChevronRightIcon className="h-4 w-4 ml-1" />
+                </Button>
+              </div>
+            )}
           </Card>
         </div>
 
@@ -928,9 +1086,7 @@ export default function ProductPage(): JSX.Element {
                 {editingId ? "Edit Product" : "New Product"}
               </DialogTitle>
               <DialogDescription>
-                {editingId
-                  ? "Update product details and pricing"
-                  : "Add a new product to the catalog"}
+                {editingId ? "Update product details and pricing" : "Add a new product to the catalog"}
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4 md:grid-cols-2">
@@ -952,51 +1108,130 @@ export default function ProductPage(): JSX.Element {
                   className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
                 />
               </div>
+
+              {/* Brand Combobox */}
               <div className="space-y-2">
                 <Label>Brand *</Label>
-                <Select
-                  value={form.brandId}
-                  onValueChange={(v) => setForm({ ...form, brandId: v })}
-                >
-                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {brands.map((b) => (
-                      <SelectItem key={b.id} value={b.id}>
-                        {b.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={brandComboboxOpen} onOpenChange={setBrandComboboxOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={brandComboboxOpen}
+                      className="w-full justify-between bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                    >
+                      {form.brandId
+                        ? brands.find((b) => b.id === form.brandId)?.name || "Select brand..."
+                        : "Select brand..."}
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[300px] p-0">
+                    <Command>
+                      <CommandInput
+                        placeholder="Search brand..."
+                        value={brandComboboxSearch}
+                        onValueChange={handleBrandSearchChange}
+                      />
+                      <CommandList>
+                        {brandComboboxLoading && <CommandItem disabled>Loading...</CommandItem>}
+                        {!brandComboboxLoading && brandComboboxList.length === 0 && (
+                          <CommandEmpty>No brand found.</CommandEmpty>
+                        )}
+                        {brandComboboxList.map((brand) => (
+                          <CommandItem
+                            key={brand.id}
+                            value={brand.id}
+                            onSelect={(currentValue) => {
+                              setForm({ ...form, brandId: currentValue });
+                              setBrandComboboxOpen(false);
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                form.brandId === brand.id ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            {brand.name} {brand.category ? `(${brand.category.name})` : ""}
+                          </CommandItem>
+                        ))}
+                        {brandComboboxMeta.currentPage < brandComboboxMeta.totalPages && (
+                          <CommandItem onSelect={loadMoreBrands} className="justify-center">
+                            Load more...
+                          </CommandItem>
+                        )}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
+
+              {/* Packaging Combobox */}
               <div className="space-y-2">
                 <Label>Packaging *</Label>
-                <Select
-                  value={form.packagingId}
-                  onValueChange={(v) => setForm({ ...form, packagingId: v })}
-                >
-                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {packagings.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={packagingComboboxOpen} onOpenChange={setPackagingComboboxOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={packagingComboboxOpen}
+                      className="w-full justify-between bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                    >
+                      {form.packagingId
+                        ? packagings.find((p) => p.id === form.packagingId)?.name || "Select packaging..."
+                        : "Select packaging..."}
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[300px] p-0">
+                    <Command>
+                      <CommandInput
+                        placeholder="Search packaging..."
+                        value={packagingComboboxSearch}
+                        onValueChange={handlePackagingSearchChange}
+                      />
+                      <CommandList>
+                        {packagingComboboxLoading && <CommandItem disabled>Loading...</CommandItem>}
+                        {!packagingComboboxLoading && packagingComboboxList.length === 0 && (
+                          <CommandEmpty>No packaging found.</CommandEmpty>
+                        )}
+                        {packagingComboboxList.map((pkg) => (
+                          <CommandItem
+                            key={pkg.id}
+                            value={pkg.id}
+                            onSelect={(currentValue) => {
+                              setForm({ ...form, packagingId: currentValue });
+                              setPackagingComboboxOpen(false);
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                form.packagingId === pkg.id ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            {pkg.name}
+                          </CommandItem>
+                        ))}
+                        {packagingComboboxMeta.currentPage < packagingComboboxMeta.totalPages && (
+                          <CommandItem onSelect={loadMorePackagings} className="justify-center">
+                            Load more...
+                          </CommandItem>
+                        )}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
+
               <div className="space-y-2">
                 <Label>Units per Box</Label>
                 <Input
                   type="number"
                   min={1}
                   value={form.unitsPerBox}
-                  onChange={(e) =>
-                    setForm({ ...form, unitsPerBox: Number(e.target.value) || 1 })
-                  }
+                  onChange={(e) => setForm({ ...form, unitsPerBox: Number(e.target.value) || 1 })}
                   className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
                 />
               </div>
@@ -1039,11 +1274,7 @@ export default function ProductPage(): JSX.Element {
               </div>
             </div>
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setFormDialogOpen(false)}
-                className="border-slate-300 dark:border-slate-700"
-              >
+              <Button variant="outline" onClick={() => setFormDialogOpen(false)} className="border-slate-300 dark:border-slate-700">
                 Cancel
               </Button>
               <Button
@@ -1057,14 +1288,13 @@ export default function ProductPage(): JSX.Element {
           </DialogContent>
         </Dialog>
 
-        {/* Delete Confirmation Dialog (ShadCN AlertDialog) */}
+        {/* Delete Confirmation Dialog */}
         <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Delete Product</AlertDialogTitle>
               <AlertDialogDescription>
-                Are you sure you want to delete{" "}
-                <strong>{productToDelete?.name}</strong>?
+                Are you sure you want to delete <strong>{productToDelete?.name}</strong>?
                 <br />
                 You will have {UNDO_SECONDS} seconds to undo this action.
               </AlertDialogDescription>
@@ -1098,6 +1328,8 @@ export default function ProductPage(): JSX.Element {
                 setActiveEntityTab(v as typeof activeEntityTab);
                 resetEntityForm();
                 setEntitySearch("");
+                setEntityPage(1);
+                fetchEntities(v as typeof activeEntityTab, 1, "");
               }}
             >
               <TabsList className="grid w-full grid-cols-3 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
@@ -1121,146 +1353,207 @@ export default function ProductPage(): JSX.Element {
                 </TabsTrigger>
               </TabsList>
 
-              <div className="space-y-4 py-4">
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      placeholder={`Search ${activeEntityTab}s...`}
-                      value={entitySearch}
-                      onChange={(e) => setEntitySearch(e.target.value)}
-                      className="pl-8 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
-                    />
-                  </div>
-                  <Button
-                    onClick={() => {
-                      resetEntityForm();
-                      setEditingEntityId(null);
-                    }}
-                    className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white"
-                  >
-                    <Plus className="mr-2 h-4 w-4" /> Add
-                  </Button>
-                </div>
-
-                <div className="max-h-80 space-y-1 overflow-y-auto">
-                  {filteredEntities.map((item: Category | Brand | Packaging) => (
-                    <div
-                      key={item.id}
-                      className="flex items-center justify-between rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm px-3 py-2"
-                    >
-                      <div className="flex flex-col">
-                        <span className="capitalize font-medium">
-                          {activeEntityTab === "packaging"
-                            ? (item as Packaging).name
-                            : (item as Category | Brand).name}
-                        </span>
-                        {activeEntityTab === "brand" && (
-                          <span className="text-xs text-muted-foreground">
-                            {categories.find((c) => c.id === (item as Brand).categoryId)?.name ?? "—"}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
-                          onClick={() => handleEditEntity(item)}
-                        >
-                          <Pencil className="h-3 w-3" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
-                          onClick={() => handleDeleteEntity(item.id)}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="border-t pt-4">
-                  <Label className="mb-2 block">
-                    {editingEntityId ? "Edit" : "Add"} {activeEntityTab}
-                  </Label>
-                  <div className="mt-2 flex gap-2 items-end">
-                    {activeEntityTab === "packaging" ? (
-                      <Select
-                        value={entityForm.type}
-                        onValueChange={(v) => setEntityForm({ ...entityForm, type: v })}
-                      >
-                        <SelectTrigger className="flex-1 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                          <SelectValue placeholder="Select type" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="bottle">Bottle</SelectItem>
-                          <SelectItem value="can">Can</SelectItem>
-                          <SelectItem value="plastic">Plastic</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    ) : activeEntityTab === "brand" ? (
-                      <>
-                        <div className="flex-1 space-y-1">
-                          <Label className="text-xs">Name</Label>
-                          <Input
-                            placeholder="Brand name"
-                            value={entityForm.name}
-                            onChange={(e) =>
-                              setEntityForm({ ...entityForm, name: e.target.value })
-                            }
-                            className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
-                          />
-                        </div>
-                        <div className="flex-1 space-y-1">
-                          <Label className="text-xs">Category</Label>
-                          <Select
-                            value={entityForm.categoryId}
-                            onValueChange={(v) =>
-                              setEntityForm({ ...entityForm, categoryId: v })
-                            }
-                          >
-                            <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                              <SelectValue placeholder="Select category" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {categories.map((c) => (
-                                <SelectItem key={c.id} value={c.id}>
-                                  {c.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </>
-                    ) : (
+              {["category", "brand", "packaging"].map((tab) => (
+                <TabsContent key={tab} value={tab} className="space-y-4">
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
                       <Input
-                        placeholder="Category name"
-                        value={entityForm.name}
-                        onChange={(e) =>
-                          setEntityForm({ ...entityForm, name: e.target.value })
-                        }
-                        className="flex-1 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        placeholder={`Search ${tab}s...`}
+                        value={entitySearch}
+                        onChange={(e) => {
+                          setEntitySearch(e.target.value);
+                          setEntityPage(1);
+                          fetchEntities(tab as typeof activeEntityTab, 1, e.target.value);
+                        }}
+                        className="pl-8 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
                       />
-                    )}
+                    </div>
                     <Button
-                      onClick={handleEntitySubmit}
-                      disabled={entityLoading}
+                      onClick={() => {
+                        resetEntityForm();
+                        setEditingEntityId(null);
+                      }}
                       className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white"
                     >
-                      {editingEntityId ? "Update" : "Add"}
+                      <Plus className="mr-2 h-4 w-4" /> Add
                     </Button>
-                    {editingEntityId && (
-                      <Button variant="ghost" onClick={resetEntityForm}>
-                        Cancel
-                      </Button>
+                  </div>
+
+                  {/* Entity cards grid */}
+                  <div className="max-h-64 overflow-y-auto grid gap-2">
+                    {entityList.map((item: any) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center justify-between rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm p-3"
+                      >
+                        <div className="flex flex-col">
+                          <span className="capitalize font-medium">
+                            {tab === "packaging" ? item.name : item.name}
+                          </span>
+                          {tab === "brand" && (
+                            <span className="text-xs text-muted-foreground">
+                              {item.category?.name ?? "—"}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex gap-1">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
+                                onClick={() => handleEditEntity(item)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Edit</TooltipContent>
+                          </Tooltip>
+                          {tab !== "packaging" && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
+                                  onClick={() => handleDeleteEntity(item.id)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Delete</TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {entityList.length === 0 && !entityLoading && (
+                      <p className="text-center text-muted-foreground py-4">
+                        No {tab}s found.
+                      </p>
+                    )}
+                    {entityLoading && (
+                      <div className="flex justify-center py-4">
+                        <Loader2 className="h-6 w-6 animate-spin" />
+                      </div>
                     )}
                   </div>
-                </div>
-              </div>
+
+                  {/* Entity pagination */}
+                  {entityMeta.totalPages > 1 && (
+                    <div className="flex justify-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={entityMeta.currentPage === 1}
+                        onClick={() =>
+                          fetchEntities(tab as typeof activeEntityTab, entityMeta.currentPage - 1, entitySearch)
+                        }
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </Button>
+                      {Array.from({ length: entityMeta.totalPages }, (_, i) => i + 1)
+                        .filter((p) => p === 1 || p === entityMeta.totalPages || Math.abs(p - entityMeta.currentPage) <= 1)
+                        .map((p) => (
+                          <Button
+                            key={p}
+                            variant={entityMeta.currentPage === p ? "default" : "ghost"}
+                            size="sm"
+                            onClick={() => fetchEntities(tab as typeof activeEntityTab, p, entitySearch)}
+                            className={entityMeta.currentPage === p ? "bg-indigo-600 text-white" : ""}
+                          >
+                            {p}
+                          </Button>
+                        ))}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={entityMeta.currentPage === entityMeta.totalPages}
+                        onClick={() =>
+                          fetchEntities(tab as typeof activeEntityTab, entityMeta.currentPage + 1, entitySearch)
+                        }
+                      >
+                        <ChevronRightIcon className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Entity form */}
+                  <div className="border-t pt-4">
+                    <Label className="mb-2 block">
+                      {editingEntityId ? "Edit" : "Add"} {tab}
+                    </Label>
+                    <div className="mt-2 flex gap-2 items-end">
+                      {tab === "packaging" ? (
+                        <Select
+                          value={entityForm.type}
+                          onValueChange={(v) => setEntityForm({ ...entityForm, type: v })}
+                        >
+                          <SelectTrigger className="flex-1 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                            <SelectValue placeholder="Select type" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="bottle">Bottle</SelectItem>
+                            <SelectItem value="can">Can</SelectItem>
+                            <SelectItem value="plastic">Plastic</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      ) : tab === "brand" ? (
+                        <>
+                          <div className="flex-1 space-y-1">
+                            <Label className="text-xs">Name</Label>
+                            <Input
+                              placeholder="Brand name"
+                              value={entityForm.name}
+                              onChange={(e) => setEntityForm({ ...entityForm, name: e.target.value })}
+                              className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                            />
+                          </div>
+                          <div className="flex-1 space-y-1">
+                            <Label className="text-xs">Category</Label>
+                            <Select
+                              value={entityForm.categoryId}
+                              onValueChange={(v) => setEntityForm({ ...entityForm, categoryId: v })}
+                            >
+                              <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                                <SelectValue placeholder="Select category" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {categories.map((c) => (
+                                  <SelectItem key={c.id} value={c.id}>
+                                    {c.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </>
+                      ) : (
+                        <Input
+                          placeholder="Category name"
+                          value={entityForm.name}
+                          onChange={(e) => setEntityForm({ ...entityForm, name: e.target.value })}
+                          className="flex-1 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        />
+                      )}
+                      <Button
+                        onClick={handleEntitySubmit}
+                        disabled={entityLoading}
+                        className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white"
+                      >
+                        {editingEntityId ? "Update" : "Add"}
+                      </Button>
+                      {editingEntityId && (
+                        <Button variant="ghost" onClick={resetEntityForm}>
+                          Cancel
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </TabsContent>
+              ))}
             </Tabs>
           </DialogContent>
         </Dialog>

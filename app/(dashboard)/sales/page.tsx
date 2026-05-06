@@ -98,7 +98,7 @@ interface Product {
     id: string;
     buyPricePerBox: number;
     sellPricePerBox: number;
-    sellPricePerUnit?: number;          // optional stored single unit price
+    sellPricePerUnit?: number;
     allowLoss: boolean;
   }>;
 }
@@ -122,9 +122,10 @@ interface NewSaleItemForm {
 const CURRENCY = "ETB";
 const UNDO_TIMEOUT_SECONDS = 5;
 
-type DatePreset = "today" | "7d" | "30d" | "90d" | "6m" | "12m" | "all";
+type DatePreset = "today" | "3d" | "7d" | "30d" | "90d" | "6m" | "12m" | "all";
 const DATE_PRESETS: { label: string; value: DatePreset }[] = [
   { label: "Today", value: "today" },
+  { label: "Last 3 Days", value: "3d" },
   { label: "Last Week", value: "7d" },
   { label: "Last Month", value: "30d" },
   { label: "Last 3 Months", value: "90d" },
@@ -209,7 +210,6 @@ function SaleFormDialog({
     setItems(updated);
   };
 
-  // Pricing derivatives
   const getPricingInfo = (item: NewSaleItemForm) => {
     const product = products.find((p) => p.id === item.productId);
     if (!product || !product.prices?.[0])
@@ -226,14 +226,12 @@ function SaleFormDialog({
     return { boxBuyPrice, boxSellPrice, costPerUnit, computedUnitSell, storedSingleSell };
   };
 
-  // Effective unit price for display/calculation
   const getEffectiveUnitPrice = (item: NewSaleItemForm) => {
     const { boxSellPrice, computedUnitSell, storedSingleSell } = getPricingInfo(item);
     if (item.customUnitPrice.trim() !== "")
       return toNum(item.customUnitPrice);
     if (item.unitType === "box")
       return boxSellPrice;
-    // For singles: use explicitly stored single price if available, else computed
     return storedSingleSell ?? computedUnitSell;
   };
 
@@ -276,7 +274,6 @@ function SaleFormDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-6 py-4">
-          {/* Customer Name + Description */}
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label>Customer Name *</Label>
@@ -298,7 +295,6 @@ function SaleFormDialog({
             </div>
           </div>
 
-          {/* Payment */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Payment Type</Label>
@@ -314,10 +310,7 @@ function SaleFormDialog({
             </div>
             <div className="space-y-2">
               <Label>Payment Status</Label>
-              <Select
-                value={paymentStatus}
-                onValueChange={onPaymentStatusChange}
-              >
+              <Select value={paymentStatus} onValueChange={onPaymentStatusChange}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -329,7 +322,6 @@ function SaleFormDialog({
             </div>
           </div>
 
-          {/* Quick Picks */}
           {quickPicks.length > 0 && (
             <div>
               <Label className="text-sm font-semibold mb-2 block">
@@ -373,7 +365,6 @@ function SaleFormDialog({
             </div>
           )}
 
-          {/* Items */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <Label className="text-base font-semibold">Items</Label>
@@ -388,7 +379,6 @@ function SaleFormDialog({
                 const effectiveUnitPrice = getEffectiveUnitPrice(item);
 
                 const customEnabled = item.customUnitPrice.trim() !== "";
-                // The displayed default unit price for the "Custom" checkbox placeholder
                 const defaultDisplayUnit =
                   item.unitType === "box"
                     ? pricing.boxSellPrice
@@ -436,15 +426,10 @@ function SaleFormDialog({
                       min={1}
                       value={item.quantity}
                       onChange={(e) =>
-                        updateItem(
-                          idx,
-                          "quantity",
-                          Number(e.target.value) || 0
-                        )
+                        updateItem(idx, "quantity", Number(e.target.value) || 0)
                       }
                       className="w-20"
                     />
-                    {/* Custom price toggle and input */}
                     <div className="flex items-center gap-1 ml-2">
                       <Checkbox
                         id={`custom-${idx}`}
@@ -461,10 +446,7 @@ function SaleFormDialog({
                           }
                         }}
                       />
-                      <Label
-                        htmlFor={`custom-${idx}`}
-                        className="text-xs cursor-pointer"
-                      >
+                      <Label htmlFor={`custom-${idx}`} className="text-xs cursor-pointer">
                         Custom
                       </Label>
                       {customEnabled && (
@@ -472,9 +454,7 @@ function SaleFormDialog({
                           type="number"
                           step="0.01"
                           value={item.customUnitPrice}
-                          onChange={(e) =>
-                            updateItem(idx, "customUnitPrice", e.target.value)
-                          }
+                          onChange={(e) => updateItem(idx, "customUnitPrice", e.target.value)}
                           className="w-24 text-xs"
                           placeholder={defaultDisplayUnit.toFixed(2)}
                         />
@@ -488,7 +468,6 @@ function SaleFormDialog({
                         {(effectiveUnitPrice * item.quantity).toFixed(2)} {CURRENCY}
                       </Badge>
                     </div>
-                    {/* Price Breakdown */}
                     {product && (
                       <div className="w-full grid grid-cols-2 gap-2 text-xs text-muted-foreground mt-1">
                         <div>
@@ -504,7 +483,6 @@ function SaleFormDialog({
                         </div>
                       </div>
                     )}
-                    {/* Stock warning when breaking boxes */}
                     {singleInfo && singleInfo.boxesNeeded > 0 && (
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -537,13 +515,10 @@ function SaleFormDialog({
             </div>
           </div>
 
-          {/* Preview */}
           <div className="rounded-xl bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-950/30 dark:to-teal-950/30 p-4 border border-emerald-200">
             <div className="flex justify-between text-sm">
               <span>Total Cost:</span>
-              <span className="font-mono">
-                {preview.cost.toFixed(2)} {CURRENCY}
-              </span>
+              <span className="font-mono">{preview.cost.toFixed(2)} {CURRENCY}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span>Total Amount:</span>
@@ -553,21 +528,14 @@ function SaleFormDialog({
             </div>
             <div className="flex justify-between text-sm font-semibold mt-1">
               <span>Profit:</span>
-              <span
-                className={cn(
-                  "font-mono",
-                  preview.profit >= 0 ? "text-emerald-600" : "text-rose-600"
-                )}
-              >
+              <span className={cn("font-mono", preview.profit >= 0 ? "text-emerald-600" : "text-rose-600")}>
                 {preview.profit.toFixed(2)} {CURRENCY}
               </span>
             </div>
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>
-            Cancel
-          </Button>
+          <Button variant="outline" onClick={onCancel}>Cancel</Button>
           <Button
             onClick={onSubmit}
             disabled={loading || items.length === 0}
@@ -674,15 +642,6 @@ export default function SalesPage(): JSX.Element {
     fetchAll();
   }, []);
 
-  // Stats
-  useEffect(() => {
-    const totalSales = sales.length;
-    const totalRevenue = sales.reduce((sum, s) => sum + s.totalAmount, 0);
-    const totalProfit = sales.reduce((sum, s) => sum + s.profit, 0);
-    const pendingPayments = sales.filter((s) => s.paymentStatus === "pending").length;
-    setStats({ totalSales, totalRevenue, totalProfit, pendingPayments });
-  }, [sales]);
-
   // Quick picks
   const quickPicks = useMemo(() => {
     const counts: Record<string, { count: number; name: string }> = {};
@@ -705,16 +664,26 @@ export default function SalesPage(): JSX.Element {
     const d = new Date(dateStr);
     const now = new Date();
     switch (preset) {
-      case "today": return d.toDateString() === now.toDateString();
-      case "7d": return d >= new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
-      case "30d": return d >= new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
-      case "90d": return d >= new Date(now.getFullYear(), now.getMonth(), now.getDate() - 90);
-      case "6m": return d >= new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
-      case "12m": return d >= new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
-      default: return true;
+      case "today":
+        return d.toDateString() === now.toDateString();
+      case "3d":
+        return d >= new Date(now.getFullYear(), now.getMonth(), now.getDate() - 3);
+      case "7d":
+        return d >= new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
+      case "30d":
+        return d >= new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
+      case "90d":
+        return d >= new Date(now.getFullYear(), now.getMonth(), now.getDate() - 90);
+      case "6m":
+        return d >= new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+      case "12m":
+        return d >= new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+      default:
+        return true;
     }
   };
 
+  // Filtered sales based on all criteria
   const filteredSales = useMemo(() => {
     let f = sales;
     if (search) {
@@ -729,6 +698,15 @@ export default function SalesPage(): JSX.Element {
     f = f.filter((s) => isWithinDatePreset(s.createdAt, datePreset));
     return f;
   }, [sales, search, filterPaymentType, filterPaymentStatus, datePreset]);
+
+  // Stats from filtered sales
+  useEffect(() => {
+    const totalSales = filteredSales.length;
+    const totalRevenue = filteredSales.reduce((sum, s) => sum + s.totalAmount, 0);
+    const totalProfit = filteredSales.reduce((sum, s) => sum + s.profit, 0);
+    const pendingPayments = filteredSales.filter((s) => s.paymentStatus === "pending").length;
+    setStats({ totalSales, totalRevenue, totalProfit, pendingPayments });
+  }, [filteredSales]);
 
   // Stock helpers
   const getStockForProduct = (pid: string) => stocks.find((s) => s.productId === pid);
@@ -1014,156 +992,160 @@ export default function SalesPage(): JSX.Element {
 
           {/* Sales Table */}
           <Card className="overflow-hidden border-0 shadow-xl bg-white/70 dark:bg-slate-900/70 backdrop-blur-md">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 border-b-2 border-slate-300 dark:border-slate-600">
-                  <TableHead className="w-8"></TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Payment</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Items</TableHead>
-                  <TableHead>Amount</TableHead>
-                  <TableHead>Profit</TableHead>
-                  <TableHead className="w-24"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {loading && !filteredSales.length ? (
-                  [...Array(5)].map((_, i) => <TableRow key={i}><TableCell colSpan={9}><Skeleton className="h-12 w-full" /></TableCell></TableRow>)
-                ) : filteredSales.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={9} className="h-32 text-center">
-                      <Receipt className="h-12 w-12 text-muted-foreground/50 mx-auto mb-2" />
-                      <p className="text-muted-foreground">No sales found.</p>
-                    </TableCell>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 border-b-2 border-slate-300 dark:border-slate-600">
+                    <TableHead className="w-8"></TableHead>
+                    <TableHead className="min-w-[140px]">Customer</TableHead>
+                    <TableHead className="min-w-[100px]">Date</TableHead>
+                    <TableHead className="min-w-[90px]">Payment</TableHead>
+                    <TableHead className="min-w-[90px]">Status</TableHead>
+                    <TableHead className="min-w-[60px]">Items</TableHead>
+                    <TableHead className="min-w-[100px]">Amount</TableHead>
+                    <TableHead className="min-w-[90px]">Profit</TableHead>
+                    <TableHead className="w-24"></TableHead>
                   </TableRow>
-                ) : (
-                  filteredSales.map((sale) => {
-                    const isExpanded = expandedRows.has(sale.id);
-                    const itemCount = sale.items?.length || 0;
-                    return (
-                      <React.Fragment key={sale.id}>
-                        <TableRow className="group cursor-pointer hover:bg-emerald-50/50 dark:hover:bg-emerald-950/30" onClick={() => toggleRowExpanded(sale.id)}>
-                          <TableCell>
-                            <motion.div animate={{ rotate: isExpanded ? 90 : 0 }}>
-                              <ChevronRight className="h-4 w-4" />
-                            </motion.div>
-                          </TableCell>
-                          <TableCell className="font-medium max-w-[200px] truncate flex items-center gap-1">
-                            <User className="h-4 w-4 text-muted-foreground" />
-                            {sale.customerName}
-                          </TableCell>
-                          <TableCell className="text-sm whitespace-nowrap">
-                            {new Date(sale.createdAt).toLocaleDateString()}
-                          </TableCell>
-                          <TableCell>
-                            <Badge className={sale.paymentType === "cash" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}>
-                              {sale.paymentType}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <Badge className={sale.paymentStatus === "paid" ? "bg-green-100 text-green-700" : "bg-rose-100 text-rose-700"}>
-                              {sale.paymentStatus}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>{itemCount} items</TableCell>
-                          <TableCell className="font-mono">
-                            {sale.totalAmount.toFixed(2)} {CURRENCY}
-                          </TableCell>
-                          <TableCell className={cn("font-mono", sale.profit >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                            {sale.profit >= 0 ? "+" : ""}{sale.profit.toFixed(2)} {CURRENCY}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); openEditDialog(sale); }}>
-                                    <Edit3 className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Edit</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={(e) => { e.stopPropagation(); handleDeleteSale(sale.id); }}>
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Delete</TooltipContent>
-                              </Tooltip>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                        {isExpanded && sale.items && (
-                          <TableRow>
-                            <TableCell colSpan={9} className="p-0">
-                              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="px-6 py-5 bg-slate-50 dark:bg-slate-800/50">
-                                <div className="flex justify-between mb-3">
-                                  <h4 className="font-semibold">Items ({itemCount})</h4>
-                                  {itemCount > 5 && (
-                                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); openFullItemDetail(sale); }}>
-                                      View All
-                                    </Button>
-                                  )}
-                                </div>
-                                <Table className="min-w-[600px]">
-                                  <TableHeader>
-                                    <TableRow>
-                                      <TableHead>Product</TableHead>
-                                      <TableHead>Unit</TableHead>
-                                      <TableHead>Qty</TableHead>
-                                      <TableHead>Unit Price</TableHead>
-                                      <TableHead>Total</TableHead>
-                                      <TableHead>Cost</TableHead>
-                                      <TableHead>Buy (Box/Unit)</TableHead>
-                                      <TableHead>Sell (Box/Unit)</TableHead>
-                                      <TableHead>Single Price</TableHead>
-                                    </TableRow>
-                                  </TableHeader>
-                                  <TableBody>
-                                    {sale.items.slice(0, 5).map((item) => {
-                                      const product = products.find((p) => p.id === item.productId);
-                                      const price = product?.prices?.[0];
-                                      const boxBuyPrice = toNum(price?.buyPricePerBox);
-                                      const boxSellPrice = toNum(price?.sellPricePerBox);
-                                      const unitsPerBox = product?.unitsPerBox ?? 1;
-                                      const costPerUnit = boxBuyPrice / unitsPerBox;
-                                      const computedUnitSell = boxSellPrice / unitsPerBox;
-                                      const storedSingleSell = price?.sellPricePerUnit && price.sellPricePerUnit > 0
-                                        ? toNum(price.sellPricePerUnit)
-                                        : undefined;
-                                      return (
-                                        <TableRow key={item.id}>
-                                          <TableCell className="font-medium">{item.productName}</TableCell>
-                                          <TableCell className="capitalize">{item.unitType}</TableCell>
-                                          <TableCell>{item.quantity}</TableCell>
-                                          <TableCell className="font-mono">{item.unitPrice.toFixed(2)} {CURRENCY}</TableCell>
-                                          <TableCell className="font-mono">{item.totalPrice.toFixed(2)} {CURRENCY}</TableCell>
-                                          <TableCell className="font-mono">{item.totalCost.toFixed(2)} {CURRENCY}</TableCell>
-                                          <TableCell className="text-xs">{boxBuyPrice.toFixed(2)} / {costPerUnit.toFixed(3)}</TableCell>
-                                          <TableCell className="text-xs">{boxSellPrice.toFixed(2)} / {computedUnitSell.toFixed(3)}</TableCell>
-                                          <TableCell className="text-xs">{storedSingleSell != null ? storedSingleSell.toFixed(3) : "—"}</TableCell>
-                                        </TableRow>
-                                      );
-                                    })}
-                                  </TableBody>
-                                </Table>
-                                <div className="flex justify-end gap-8 text-sm border-t pt-4 mt-2">
-                                  <div><span className="text-muted-foreground">Total Cost:</span> <span className="font-mono">{sale.totalCost.toFixed(2)} {CURRENCY}</span></div>
-                                  <div><span className="text-muted-foreground">Total Amount:</span> <span className="font-mono">{sale.totalAmount.toFixed(2)} {CURRENCY}</span></div>
-                                  <div><span className="text-muted-foreground">Profit:</span> <span className="font-mono font-bold text-emerald-600">{sale.profit.toFixed(2)} {CURRENCY}</span></div>
-                                </div>
+                </TableHeader>
+                <TableBody>
+                  {loading && !filteredSales.length ? (
+                    [...Array(5)].map((_, i) => <TableRow key={i}><TableCell colSpan={9}><Skeleton className="h-12 w-full" /></TableCell></TableRow>)
+                  ) : filteredSales.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={9} className="h-32 text-center">
+                        <Receipt className="h-12 w-12 text-muted-foreground/50 mx-auto mb-2" />
+                        <p className="text-muted-foreground">No sales found.</p>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    filteredSales.map((sale) => {
+                      const isExpanded = expandedRows.has(sale.id);
+                      const itemCount = sale.items?.length || 0;
+                      return (
+                        <React.Fragment key={sale.id}>
+                          <TableRow className="group cursor-pointer hover:bg-emerald-50/50 dark:hover:bg-emerald-950/30" onClick={() => toggleRowExpanded(sale.id)}>
+                            <TableCell>
+                              <motion.div animate={{ rotate: isExpanded ? 90 : 0 }}>
+                                <ChevronRight className="h-4 w-4" />
                               </motion.div>
                             </TableCell>
+                            <TableCell className="font-medium max-w-[200px] truncate flex items-center gap-1">
+                              <User className="h-4 w-4 text-muted-foreground" />
+                              {sale.customerName}
+                            </TableCell>
+                            <TableCell className="text-sm whitespace-nowrap">
+                              {new Date(sale.createdAt).toLocaleDateString()}
+                            </TableCell>
+                            <TableCell>
+                              <Badge className={sale.paymentType === "cash" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}>
+                                {sale.paymentType}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <Badge className={sale.paymentStatus === "paid" ? "bg-green-100 text-green-700" : "bg-rose-100 text-rose-700"}>
+                                {sale.paymentStatus}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>{itemCount} items</TableCell>
+                            <TableCell className="font-mono">
+                              {sale.totalAmount.toFixed(2)} {CURRENCY}
+                            </TableCell>
+                            <TableCell className={cn("font-mono", sale.profit >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                              {sale.profit >= 0 ? "+" : ""}{sale.profit.toFixed(2)} {CURRENCY}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100">
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); openEditDialog(sale); }}>
+                                      <Edit3 className="h-4 w-4" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Edit</TooltipContent>
+                                </Tooltip>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={(e) => { e.stopPropagation(); handleDeleteSale(sale.id); }}>
+                                      <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Delete</TooltipContent>
+                                </Tooltip>
+                              </div>
+                            </TableCell>
                           </TableRow>
-                        )}
-                      </React.Fragment>
-                    );
-                  })
-                )}
-              </TableBody>
-            </Table>
+                          {isExpanded && sale.items && (
+                            <TableRow>
+                              <TableCell colSpan={9} className="p-0">
+                                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="px-6 py-5 bg-slate-50 dark:bg-slate-800/50">
+                                  <div className="flex justify-between mb-3">
+                                    <h4 className="font-semibold">Items ({itemCount})</h4>
+                                    {itemCount > 5 && (
+                                      <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); openFullItemDetail(sale); }}>
+                                        View All
+                                      </Button>
+                                    )}
+                                  </div>
+                                  <div className="overflow-x-auto">
+                                    <Table className="min-w-[600px]">
+                                      <TableHeader>
+                                        <TableRow>
+                                          <TableHead>Product</TableHead>
+                                          <TableHead>Unit</TableHead>
+                                          <TableHead>Qty</TableHead>
+                                          <TableHead>Unit Price</TableHead>
+                                          <TableHead>Total</TableHead>
+                                          <TableHead>Cost</TableHead>
+                                          <TableHead>Buy (Box/Unit)</TableHead>
+                                          <TableHead>Sell (Box/Unit)</TableHead>
+                                          <TableHead>Single Price</TableHead>
+                                        </TableRow>
+                                      </TableHeader>
+                                      <TableBody>
+                                        {sale.items.slice(0, 5).map((item) => {
+                                          const product = products.find((p) => p.id === item.productId);
+                                          const price = product?.prices?.[0];
+                                          const boxBuyPrice = toNum(price?.buyPricePerBox);
+                                          const boxSellPrice = toNum(price?.sellPricePerBox);
+                                          const unitsPerBox = product?.unitsPerBox ?? 1;
+                                          const costPerUnit = boxBuyPrice / unitsPerBox;
+                                          const computedUnitSell = boxSellPrice / unitsPerBox;
+                                          const storedSingleSell = price?.sellPricePerUnit && price.sellPricePerUnit > 0
+                                            ? toNum(price.sellPricePerUnit)
+                                            : undefined;
+                                          return (
+                                            <TableRow key={item.id}>
+                                              <TableCell className="font-medium">{item.productName}</TableCell>
+                                              <TableCell className="capitalize">{item.unitType}</TableCell>
+                                              <TableCell>{item.quantity}</TableCell>
+                                              <TableCell className="font-mono">{item.unitPrice.toFixed(2)} {CURRENCY}</TableCell>
+                                              <TableCell className="font-mono">{item.totalPrice.toFixed(2)} {CURRENCY}</TableCell>
+                                              <TableCell className="font-mono">{item.totalCost.toFixed(2)} {CURRENCY}</TableCell>
+                                              <TableCell className="text-xs">{boxBuyPrice.toFixed(2)} / {costPerUnit.toFixed(3)}</TableCell>
+                                              <TableCell className="text-xs">{boxSellPrice.toFixed(2)} / {computedUnitSell.toFixed(3)}</TableCell>
+                                              <TableCell className="text-xs">{storedSingleSell != null ? storedSingleSell.toFixed(3) : "—"}</TableCell>
+                                            </TableRow>
+                                          );
+                                        })}
+                                      </TableBody>
+                                    </Table>
+                                  </div>
+                                  <div className="flex justify-end gap-8 text-sm border-t pt-4 mt-2">
+                                    <div><span className="text-muted-foreground">Total Cost:</span> <span className="font-mono">{sale.totalCost.toFixed(2)} {CURRENCY}</span></div>
+                                    <div><span className="text-muted-foreground">Total Amount:</span> <span className="font-mono">{sale.totalAmount.toFixed(2)} {CURRENCY}</span></div>
+                                    <div><span className="text-muted-foreground">Profit:</span> <span className="font-mono font-bold text-emerald-600">{sale.profit.toFixed(2)} {CURRENCY}</span></div>
+                                  </div>
+                                </motion.div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </React.Fragment>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </Card>
         </div>
 
@@ -1228,48 +1210,50 @@ export default function SalesPage(): JSX.Element {
             </DialogHeader>
             {selectedSale && (
               <div className="space-y-4">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Product</TableHead>
-                      <TableHead>Unit</TableHead>
-                      <TableHead>Qty</TableHead>
-                      <TableHead>Unit Price</TableHead>
-                      <TableHead>Total Price</TableHead>
-                      <TableHead>Cost</TableHead>
-                      <TableHead>Buy (Box/Unit)</TableHead>
-                      <TableHead>Sell (Box/Unit)</TableHead>
-                      <TableHead>Single Price</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {selectedSale.items?.map((item) => {
-                      const product = products.find((p) => p.id === item.productId);
-                      const price = product?.prices?.[0];
-                      const boxBuyPrice = toNum(price?.buyPricePerBox);
-                      const boxSellPrice = toNum(price?.sellPricePerBox);
-                      const unitsPerBox = product?.unitsPerBox ?? 1;
-                      const costPerUnit = boxBuyPrice / unitsPerBox;
-                      const computedUnitSell = boxSellPrice / unitsPerBox;
-                      const storedSingleSell = price?.sellPricePerUnit && price.sellPricePerUnit > 0
-                        ? toNum(price.sellPricePerUnit)
-                        : undefined;
-                      return (
-                        <TableRow key={item.id}>
-                          <TableCell className="font-medium">{item.productName}</TableCell>
-                          <TableCell className="capitalize">{item.unitType}</TableCell>
-                          <TableCell>{item.quantity}</TableCell>
-                          <TableCell className="font-mono">{item.unitPrice.toFixed(2)} {CURRENCY}</TableCell>
-                          <TableCell className="font-mono">{item.totalPrice.toFixed(2)} {CURRENCY}</TableCell>
-                          <TableCell className="font-mono">{item.totalCost.toFixed(2)} {CURRENCY}</TableCell>
-                          <TableCell className="text-xs">{boxBuyPrice.toFixed(2)} / {costPerUnit.toFixed(3)}</TableCell>
-                          <TableCell className="text-xs">{boxSellPrice.toFixed(2)} / {computedUnitSell.toFixed(3)}</TableCell>
-                          <TableCell className="text-xs">{storedSingleSell != null ? storedSingleSell.toFixed(3) : "—"}</TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Product</TableHead>
+                        <TableHead>Unit</TableHead>
+                        <TableHead>Qty</TableHead>
+                        <TableHead>Unit Price</TableHead>
+                        <TableHead>Total Price</TableHead>
+                        <TableHead>Cost</TableHead>
+                        <TableHead>Buy (Box/Unit)</TableHead>
+                        <TableHead>Sell (Box/Unit)</TableHead>
+                        <TableHead>Single Price</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {selectedSale.items?.map((item) => {
+                        const product = products.find((p) => p.id === item.productId);
+                        const price = product?.prices?.[0];
+                        const boxBuyPrice = toNum(price?.buyPricePerBox);
+                        const boxSellPrice = toNum(price?.sellPricePerBox);
+                        const unitsPerBox = product?.unitsPerBox ?? 1;
+                        const costPerUnit = boxBuyPrice / unitsPerBox;
+                        const computedUnitSell = boxSellPrice / unitsPerBox;
+                        const storedSingleSell = price?.sellPricePerUnit && price.sellPricePerUnit > 0
+                          ? toNum(price.sellPricePerUnit)
+                          : undefined;
+                        return (
+                          <TableRow key={item.id}>
+                            <TableCell className="font-medium">{item.productName}</TableCell>
+                            <TableCell className="capitalize">{item.unitType}</TableCell>
+                            <TableCell>{item.quantity}</TableCell>
+                            <TableCell className="font-mono">{item.unitPrice.toFixed(2)} {CURRENCY}</TableCell>
+                            <TableCell className="font-mono">{item.totalPrice.toFixed(2)} {CURRENCY}</TableCell>
+                            <TableCell className="font-mono">{item.totalCost.toFixed(2)} {CURRENCY}</TableCell>
+                            <TableCell className="text-xs">{boxBuyPrice.toFixed(2)} / {costPerUnit.toFixed(3)}</TableCell>
+                            <TableCell className="text-xs">{boxSellPrice.toFixed(2)} / {computedUnitSell.toFixed(3)}</TableCell>
+                            <TableCell className="text-xs">{storedSingleSell != null ? storedSingleSell.toFixed(3) : "—"}</TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
                 <div className="flex justify-end gap-8 text-sm border-t pt-4">
                   <div><span className="text-muted-foreground">Total Cost:</span> <span className="font-mono font-medium">{selectedSale.totalCost.toFixed(2)} {CURRENCY}</span></div>
                   <div><span className="text-muted-foreground">Total Amount:</span> <span className="font-mono font-medium">{selectedSale.totalAmount.toFixed(2)} {CURRENCY}</span></div>
