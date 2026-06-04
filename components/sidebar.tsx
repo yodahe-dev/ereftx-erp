@@ -27,7 +27,22 @@ import {
 import { cn } from "@/lib/utils";
 
 const navigation = [
+
+  
   {
+    label: "Sales",
+    href: "/sales",
+    icon: ShoppingCart,
+    color: "from-rose-400 to-pink-400",
+  },
+  {
+    label: "Stocks",
+    href: "/stocks",
+    icon: Layers,
+    color: "from-blue-400 to-cyan-400",
+  },
+  /*
+    {
     label: "Dashboard",
     href: "/",
     icon: Sparkles,
@@ -38,18 +53,6 @@ const navigation = [
     href: "/products",
     icon: Package,
     color: "from-emerald-400 to-teal-400",
-  },
-  {
-    label: "Stocks",
-    href: "/stocks",
-    icon: Layers,
-    color: "from-blue-400 to-cyan-400",
-  },
-  {
-    label: "Sales",
-    href: "/sales",
-    icon: ShoppingCart,
-    color: "from-rose-400 to-pink-400",
   },
   {
     label: "Categories",
@@ -68,7 +71,7 @@ const navigation = [
     href: "/packagings",
     icon: PackageOpen,
     color: "from-cyan-400 to-blue-400",
-  },
+  }, */
 ];
 
 export function Sidebar() {
