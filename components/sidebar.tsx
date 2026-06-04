@@ -27,8 +27,6 @@ import {
 import { cn } from "@/lib/utils";
 
 const navigation = [
-
-  
   {
     label: "Sales",
     href: "/sales",
@@ -40,6 +38,12 @@ const navigation = [
     href: "/stocks",
     icon: Layers,
     color: "from-blue-400 to-cyan-400",
+  },
+  {
+    label: "Expenses",
+    href: "/expenses",
+    icon: ChartColumn,
+    color: "from-orange-400 to-red-400",
   },
   /*
     {
