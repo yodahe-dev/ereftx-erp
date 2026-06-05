@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from "date-fns";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import {
   Plus,
@@ -19,11 +19,8 @@ import {
   Receipt,
   Sparkles,
   FolderPlus,
-  TrendingUp,
-  AlertCircle,
-  CheckCircle,
-  Clock,
-  DollarSign,
+  Undo2,
+  AlertTriangle,
 } from "lucide-react";
 
 // UI Components
@@ -47,6 +44,16 @@ import {
   DialogFooter,
   DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -118,6 +125,7 @@ interface RecurringExpense {
 // ==================== CONSTANTS ====================
 const CURRENCY = "ETB";
 const QUICK_AMOUNTS = [100, 500, 1000, 5000];
+const DELETE_UNDO_SECONDS = 5;
 
 // ==================== MAIN COMPONENT ====================
 export default function ExpensesPage() {
@@ -143,12 +151,31 @@ export default function ExpensesPage() {
   const [previewDates, setPreviewDates] = useState<Date[]>([]);
   const [generating, setGenerating] = useState(false);
   const [quickCategoryName, setQuickCategoryName] = useState("");
-  const [quickCategoryParentId, setQuickCategoryParentId] = useState("none");
   const [showQuickCategoryDialog, setShowQuickCategoryDialog] = useState(false);
   const [quickPlanTitle, setQuickPlanTitle] = useState("");
   const [quickPlanTarget, setQuickPlanTarget] = useState("");
   const [showQuickPlanDialog, setShowQuickPlanDialog] = useState(false);
   const [dateRangePreset, setDateRangePreset] = useState("all");
+
+  // Delete confirmation state
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    open: boolean;
+    type: "expense" | "category" | "plan" | "recurring";
+    id: string;
+    title: string;
+    deleteFn: () => Promise<void>;
+    optimisticData: any;
+  } | null>(null);
+
+  // Force delete dialog
+  const [forceDeleteDialog, setForceDeleteDialog] = useState<{
+    open: boolean;
+    id: string;
+    title: string;
+    categories: ExpenseCategory[];
+  } | null>(null);
+  const [forceReassignTo, setForceReassignTo] = useState<string>("none");
+  const [forceLoading, setForceLoading] = useState(false);
 
   // Form states
   const [expenseForm, setExpenseForm] = useState({
@@ -159,7 +186,7 @@ export default function ExpensesPage() {
     referenceType: "general" as ExpenseReferenceType,
     notes: "",
   });
-  const [categoryForm, setCategoryForm] = useState({ name: "", description: "", parentId: "none" });
+  const [categoryForm, setCategoryForm] = useState({ name: "", description: "" });
   const [planForm, setPlanForm] = useState({ title: "", targetAmount: "", targetDate: "", status: "planned" as ExpensePlanStatus, notes: "" });
   const [recurringForm, setRecurringForm] = useState({
     title: "",
@@ -171,30 +198,121 @@ export default function ExpensesPage() {
     notes: "",
   });
 
-  // ---------- Quick date presets ----------
-  const applyDatePreset = (preset: string) => {
-    const today = new Date();
-    let start = "";
-    let end = "";
-    switch (preset) {
-      case "today":
-        start = format(today, "yyyy-MM-dd");
-        end = format(today, "yyyy-MM-dd");
-        break;
-      case "week":
-        start = format(startOfWeek(today), "yyyy-MM-dd");
-        end = format(endOfWeek(today), "yyyy-MM-dd");
-        break;
-      case "month":
-        start = format(startOfMonth(today), "yyyy-MM-dd");
-        end = format(endOfMonth(today), "yyyy-MM-dd");
-        break;
-      default:
-        start = "";
-        end = "";
+  const getIdempotencyKey = () => crypto.randomUUID();
+
+  // Optimistic delete with undo (toast at bottom-left with custom styles)
+  const optimisticDelete = (
+    type: "expense" | "category" | "plan" | "recurring",
+    id: string,
+    title: string,
+    optimisticData: any,
+    actualDeleteFn: () => Promise<void>
+  ) => {
+    // Remove from UI immediately
+    if (type === "expense") setExpenses(prev => prev.filter(i => i.id !== id));
+    else if (type === "category") setExpenseCategories(prev => prev.filter(i => i.id !== id));
+    else if (type === "plan") setExpensePlans(prev => prev.filter(i => i.id !== id));
+    else if (type === "recurring") setRecurringExpenses(prev => prev.filter(i => i.id !== id));
+
+    let secondsLeft = DELETE_UNDO_SECONDS;
+    const toastId = `delete-${type}-${id}`;
+
+    const updateToast = () => {
+      toast.custom(
+        (t) => (
+          <div className="flex items-center justify-between gap-4 p-4 bg-slate-900 border-l-4 border-amber-500 rounded-lg shadow-xl text-white">
+            <span className="text-sm">Deleting "{title}" in {secondsLeft}s...</span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-white/30 text-white hover:bg-white/20 hover:text-white"
+              onClick={() => {
+                clearInterval(interval);
+                clearTimeout(timeout);
+                // Restore item
+                if (type === "expense") setExpenses(prev => [...prev, optimisticData]);
+                else if (type === "category") setExpenseCategories(prev => [...prev, optimisticData]);
+                else if (type === "plan") setExpensePlans(prev => [...prev, optimisticData]);
+                else if (type === "recurring") setRecurringExpenses(prev => [...prev, optimisticData]);
+                toast.dismiss(toastId);
+                toast.success("Deletion cancelled", { position: "bottom-left" });
+              }}
+            >
+              <Undo2 className="mr-1 h-3 w-3" /> Undo
+            </Button>
+          </div>
+        ),
+        { id: toastId, duration: DELETE_UNDO_SECONDS * 1000 + 500, position: "bottom-left" }
+      );
+    };
+
+    updateToast();
+
+    const interval = setInterval(() => {
+      secondsLeft--;
+      if (secondsLeft <= 0) {
+        clearInterval(interval);
+        clearTimeout(timeout);
+        toast.dismiss(toastId);
+        actualDeleteFn().catch((err) => {
+          const errorMsg = err.response?.data?.message || "Delete failed";
+          toast.error(errorMsg, { position: "bottom-left" });
+          // Restore on error
+          if (type === "expense") setExpenses(prev => [...prev, optimisticData]);
+          else if (type === "category") setExpenseCategories(prev => [...prev, optimisticData]);
+          else if (type === "plan") setExpensePlans(prev => [...prev, optimisticData]);
+          else if (type === "recurring") setRecurringExpenses(prev => [...prev, optimisticData]);
+          if (type === "category" && errorMsg.includes('force=true')) {
+            setForceDeleteDialog({ open: true, id, title, categories: expenseCategories });
+          }
+        });
+      } else {
+        updateToast();
+      }
+    }, 1000);
+
+    const timeout = setTimeout(() => {
+      if (secondsLeft > 0) {
+        clearInterval(interval);
+        toast.dismiss(toastId);
+        actualDeleteFn().catch((err) => {
+          toast.error(err.response?.data?.message || "Delete failed", { position: "bottom-left" });
+          if (type === "expense") setExpenses(prev => [...prev, optimisticData]);
+          else if (type === "category") setExpenseCategories(prev => [...prev, optimisticData]);
+          else if (type === "plan") setExpensePlans(prev => [...prev, optimisticData]);
+          else if (type === "recurring") setRecurringExpenses(prev => [...prev, optimisticData]);
+        });
+      }
+    }, DELETE_UNDO_SECONDS * 1000);
+  };
+
+  const confirmDelete = (
+    type: "expense" | "category" | "plan" | "recurring",
+    id: string,
+    title: string,
+    optimisticData: any,
+    actualDeleteFn: () => Promise<void>
+  ) => {
+    setDeleteConfirm({ open: true, type, id, title, deleteFn: actualDeleteFn, optimisticData });
+  };
+
+  const handleForceDelete = async () => {
+    if (!forceDeleteDialog) return;
+    setForceLoading(true);
+    try {
+      const params = new URLSearchParams({ force: "true" });
+      if (forceReassignTo !== "none") params.append("reassignTo", forceReassignTo);
+      await api.delete(`/expense-categories/${forceDeleteDialog.id}?${params.toString()}`);
+      toast.success(`Category ${forceReassignTo !== "none" ? "force-deleted with reassignment" : "force-deleted"}`, { position: "bottom-left" });
+      await fetchCategories();
+      await fetchExpenses();
+      setForceDeleteDialog(null);
+      setForceReassignTo("none");
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || "Force delete failed", { position: "bottom-left" });
+    } finally {
+      setForceLoading(false);
     }
-    setExpenseFilter({ ...expenseFilter, startDate: start, endDate: end });
-    setDateRangePreset(preset);
   };
 
   // ---------- Data Fetching ----------
@@ -212,7 +330,7 @@ export default function ExpensesPage() {
       setExpenses(res.data.data || []);
       setExpensePagination(prev => ({ ...prev, total: res.data.pagination?.total || 0 }));
     } catch (error) {
-      toast.error("Failed to load expenses");
+      toast.error("Failed to load expenses", { position: "bottom-left" });
     }
   };
 
@@ -221,7 +339,7 @@ export default function ExpensesPage() {
       const res = await api.get("/expense-categories?flatList=true");
       setExpenseCategories(res.data.data || []);
     } catch (error) {
-      toast.error("Failed to load categories");
+      toast.error("Failed to load categories", { position: "bottom-left" });
     }
   };
 
@@ -230,7 +348,7 @@ export default function ExpensesPage() {
       const res = await api.get("/expense-plans?limit=100");
       setExpensePlans(res.data.data || []);
     } catch (error) {
-      toast.error("Failed to load plans");
+      toast.error("Failed to load plans", { position: "bottom-left" });
     }
   };
 
@@ -239,7 +357,7 @@ export default function ExpensesPage() {
       const res = await api.get("/recurring-expenses?limit=100");
       setRecurringExpenses(res.data.data || []);
     } catch (error) {
-      toast.error("Failed to load recurring expenses");
+      toast.error("Failed to load recurring expenses", { position: "bottom-left" });
     }
   };
 
@@ -266,60 +384,62 @@ export default function ExpensesPage() {
     return { totalExpenses, byCategory, recentTrend, highestExpense };
   }, [expenses]);
 
-  // ---------- Inline Category Creation (fixed empty string) ----------
+  // ---------- Quick Category Creation (no parent) ----------
   const handleQuickCreateCategory = async () => {
-    if (!quickCategoryName.trim()) return toast.error("Category name required");
+    if (!quickCategoryName.trim()) return toast.error("Category name required", { position: "bottom-left" });
+    const idempotencyKey = getIdempotencyKey();
     try {
       const res = await api.post("/expense-categories", {
         name: quickCategoryName,
-        parentId: quickCategoryParentId === "none" ? null : quickCategoryParentId,
-      });
-      toast.success("Category created");
+        parentId: null,
+      }, { headers: { "Idempotency-Key": idempotencyKey } });
+      toast.success("Category created", { position: "bottom-left" });
       setExpenseCategories(prev => [...prev, res.data.data]);
       setExpenseForm(prev => ({ ...prev, categoryId: res.data.data.id }));
       setQuickCategoryName("");
-      setQuickCategoryParentId("none");
       setShowQuickCategoryDialog(false);
     } catch (err: any) {
-      toast.error(err.response?.data?.message || "Creation failed");
+      toast.error(err.response?.data?.message || "Creation failed", { position: "bottom-left" });
     }
   };
 
   const handleQuickCreatePlan = async () => {
-    if (!quickPlanTitle.trim() || !quickPlanTarget) return toast.error("Title and target amount required");
+    if (!quickPlanTitle.trim() || !quickPlanTarget) return toast.error("Title and target amount required", { position: "bottom-left" });
+    const idempotencyKey = getIdempotencyKey();
     try {
       const res = await api.post("/expense-plans", {
         title: quickPlanTitle,
         targetAmount: parseFloat(quickPlanTarget),
-      });
-      toast.success("Plan created");
+      }, { headers: { "Idempotency-Key": idempotencyKey } });
+      toast.success("Plan created", { position: "bottom-left" });
       setExpensePlans(prev => [...prev, res.data.data]);
       setQuickPlanTitle("");
       setQuickPlanTarget("");
       setShowQuickPlanDialog(false);
     } catch (err: any) {
-      toast.error(err.response?.data?.message || "Creation failed");
+      toast.error(err.response?.data?.message || "Creation failed", { position: "bottom-left" });
     }
   };
 
   // ---------- CRUD Handlers ----------
   const handleCreateExpense = async () => {
     if (!expenseForm.title || !expenseForm.amount || !expenseForm.categoryId) {
-      toast.error("Title, amount and category are required");
+      toast.error("Title, amount and category are required", { position: "bottom-left" });
       return;
     }
+    const idempotencyKey = getIdempotencyKey();
     try {
       await api.post("/expenses", {
         ...expenseForm,
         amount: parseFloat(expenseForm.amount),
         expenseDate: expenseForm.expenseDate || undefined,
-      });
-      toast.success("Expense created");
+      }, { headers: { "Idempotency-Key": idempotencyKey } });
+      toast.success("Expense created", { position: "bottom-left" });
       setExpenseDialogOpen(false);
       resetExpenseForm();
       fetchExpenses();
     } catch (err: any) {
-      toast.error(err.response?.data?.message || "Creation failed");
+      toast.error(err.response?.data?.message || "Creation failed", { position: "bottom-left" });
     }
   };
 
@@ -334,103 +454,73 @@ export default function ExpensesPage() {
         referenceType: expenseForm.referenceType,
         notes: expenseForm.notes,
       });
-      toast.success("Expense updated");
+      toast.success("Expense updated", { position: "bottom-left" });
       setExpenseDialogOpen(false);
       resetExpenseForm();
       fetchExpenses();
     } catch (err: any) {
-      toast.error(err.response?.data?.message || "Update failed");
+      toast.error(err.response?.data?.message || "Update failed", { position: "bottom-left" });
     }
   };
 
-  const handleDeleteExpense = async (id: string) => {
-    try {
-      await api.delete(`/expenses/${id}`);
-      toast.success("Expense deleted");
-      fetchExpenses();
-    } catch (err: any) {
-      toast.error(err.response?.data?.message || "Delete failed");
-    }
-  };
-
-  // Category handlers
   const handleCreateCategory = async () => {
-    if (!categoryForm.name) return toast.error("Name required");
+    if (!categoryForm.name) return toast.error("Name required", { position: "bottom-left" });
+    const idempotencyKey = getIdempotencyKey();
     try {
       await api.post("/expense-categories", {
         name: categoryForm.name,
         description: categoryForm.description,
-        parentId: categoryForm.parentId === "none" ? null : categoryForm.parentId,
-      });
-      toast.success("Category created");
+        parentId: null,
+      }, { headers: { "Idempotency-Key": idempotencyKey } });
+      toast.success("Category created", { position: "bottom-left" });
       setCategoryDialogOpen(false);
-      setCategoryForm({ name: "", description: "", parentId: "none" });
+      setCategoryForm({ name: "", description: "" });
       fetchCategories();
     } catch (err: any) {
-      toast.error(err.response?.data?.message);
+      toast.error(err.response?.data?.message, { position: "bottom-left" });
     }
   };
 
-  const handleDeleteCategory = async (id: string) => {
-    try {
-      await api.delete(`/expense-categories/${id}`);
-      toast.success("Category deleted");
-      fetchCategories();
-    } catch (err: any) {
-      toast.error(err.response?.data?.message);
-    }
-  };
-
-  // Plan handlers
   const handleCreatePlan = async () => {
-    if (!planForm.title || !planForm.targetAmount) return toast.error("Title and target amount required");
+    if (!planForm.title || !planForm.targetAmount) return toast.error("Title and target amount required", { position: "bottom-left" });
+    const idempotencyKey = getIdempotencyKey();
     try {
       await api.post("/expense-plans", {
         ...planForm,
         targetAmount: parseFloat(planForm.targetAmount),
         targetDate: planForm.targetDate || undefined,
-      });
-      toast.success("Plan created");
+      }, { headers: { "Idempotency-Key": idempotencyKey } });
+      toast.success("Plan created", { position: "bottom-left" });
       setPlanDialogOpen(false);
       setPlanForm({ title: "", targetAmount: "", targetDate: "", status: "planned", notes: "" });
       fetchPlans();
     } catch (err: any) {
-      toast.error(err.response?.data?.message);
-    }
-  };
-
-  const handleDeletePlan = async (id: string) => {
-    try {
-      await api.delete(`/expense-plans/${id}`);
-      toast.success("Plan deleted");
-      fetchPlans();
-    } catch (err: any) {
-      toast.error(err.response?.data?.message);
+      toast.error(err.response?.data?.message, { position: "bottom-left" });
     }
   };
 
   const handleRefreshPlan = async (id: string) => {
     try {
       await api.post(`/expense-plans/${id}/refresh-allocation`);
-      toast.success("Allocation refreshed");
+      toast.success("Allocation refreshed", { position: "bottom-left" });
       fetchPlans();
     } catch (err: any) {
-      toast.error(err.response?.data?.message);
+      toast.error(err.response?.data?.message, { position: "bottom-left" });
     }
   };
 
-  // Recurring handlers
   const handleCreateRecurring = async () => {
     if (!recurringForm.title || !recurringForm.amount || !recurringForm.categoryId) {
-      return toast.error("Title, amount and category required");
+      return toast.error("Title, amount and category required", { position: "bottom-left" });
     }
+    const idempotencyKey = getIdempotencyKey();
     try {
       await api.post("/recurring-expenses", {
         ...recurringForm,
         amount: parseFloat(recurringForm.amount),
         billingDay: parseInt(recurringForm.billingDay),
-      });
-      toast.success("Recurring expense created");
+      }, { headers: { "Idempotency-Key": idempotencyKey } });
+      toast.success("Recurring expense created", { position: "bottom-left" });
       setRecurringDialogOpen(false);
       setRecurringForm({
         title: "",
@@ -443,17 +533,7 @@ export default function ExpensesPage() {
       });
       fetchRecurring();
     } catch (err: any) {
-      toast.error(err.response?.data?.message);
-    }
-  };
-
-  const handleDeleteRecurring = async (id: string) => {
-    try {
-      await api.delete(`/recurring-expenses/${id}`);
-      toast.success("Recurring expense deleted");
-      fetchRecurring();
-    } catch (err: any) {
-      toast.error(err.response?.data?.message);
+      toast.error(err.response?.data?.message, { position: "bottom-left" });
     }
   };
 
@@ -463,7 +543,7 @@ export default function ExpensesPage() {
       setPreviewDates(res.data.data.map((d: string) => new Date(d)));
       setPreviewDatesOpen(true);
     } catch (err) {
-      toast.error("Failed to preview");
+      toast.error("Failed to preview", { position: "bottom-left" });
     }
   };
 
@@ -471,11 +551,11 @@ export default function ExpensesPage() {
     setGenerating(true);
     try {
       const res = await api.get("/recurring-expenses/generate");
-      toast.success(`Generated ${res.data.generatedCount} expenses`);
+      toast.success(`Generated ${res.data.generatedCount} expenses`, { position: "bottom-left" });
       fetchExpenses();
       fetchRecurring();
     } catch (err) {
-      toast.error("Generation failed");
+      toast.error("Generation failed", { position: "bottom-left" });
     } finally {
       setGenerating(false);
     }
@@ -499,10 +579,21 @@ export default function ExpensesPage() {
       });
     } else {
       resetExpenseForm();
-      // Pre-fill today's date for new expense
       setExpenseForm(prev => ({ ...prev, expenseDate: format(new Date(), "yyyy-MM-dd") }));
     }
     setExpenseDialogOpen(true);
+  };
+
+  const applyDatePreset = (preset: string) => {
+    const today = new Date();
+    let start = "", end = "";
+    switch (preset) {
+      case "today": start = end = format(today, "yyyy-MM-dd"); break;
+      case "week": start = format(startOfWeek(today), "yyyy-MM-dd"); end = format(endOfWeek(today), "yyyy-MM-dd"); break;
+      case "month": start = format(startOfMonth(today), "yyyy-MM-dd"); end = format(endOfMonth(today), "yyyy-MM-dd"); break;
+    }
+    setExpenseFilter({ ...expenseFilter, startDate: start, endDate: end });
+    setDateRangePreset(preset);
   };
 
   // ==================== RENDER ====================
@@ -511,9 +602,7 @@ export default function ExpensesPage() {
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900 p-8">
         <div className="mx-auto max-w-7xl space-y-6">
           <Skeleton className="h-12 w-64" />
-          <div className="grid gap-4 md:grid-cols-4">
-            <Skeleton className="h-28" /><Skeleton className="h-28" /><Skeleton className="h-28" /><Skeleton className="h-28" />
-          </div>
+          <div className="grid gap-4 md:grid-cols-4"><Skeleton className="h-28" /><Skeleton className="h-28" /><Skeleton className="h-28" /><Skeleton className="h-28" /></div>
           <Skeleton className="h-96" />
         </div>
       </div>
@@ -530,15 +619,11 @@ export default function ExpensesPage() {
               <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-r from-rose-600 via-amber-600 to-orange-600 dark:from-rose-400 dark:via-amber-400 dark:to-orange-400 bg-clip-text text-transparent">
                 Expense Management
               </h1>
-              <p className="text-sm text-muted-foreground mt-1">
-                <Sparkles className="h-3 w-3 inline text-amber-500" /> Smart tracking, plans, and automation
-              </p>
+              <p className="text-sm text-muted-foreground mt-1"><Sparkles className="h-3 w-3 inline text-amber-500" /> Smart tracking, plans, and automation</p>
             </div>
             <div className="flex gap-2">
               {activeTab === "expenses" && (
-                <Button onClick={() => openExpenseDialog()} className="bg-gradient-to-r from-rose-600 to-orange-600 text-white">
-                  <Plus className="mr-2 h-4 w-4" /> Add Expense
-                </Button>
+                <Button onClick={() => openExpenseDialog()} className="bg-gradient-to-r from-rose-600 to-orange-600 text-white"><Plus className="mr-2 h-4 w-4" /> Add Expense</Button>
               )}
               {activeTab === "categories" && (
                 <Button onClick={() => setCategoryDialogOpen(true)} variant="outline"><Plus className="mr-2 h-4 w-4" /> Add Category</Button>
@@ -549,8 +634,7 @@ export default function ExpensesPage() {
               {activeTab === "recurring" && (
                 <>
                   <Button onClick={handleGenerateNow} disabled={generating} variant="outline">
-                    {generating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                    Generate Now
+                    {generating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />} Generate Now
                   </Button>
                   <Button onClick={() => setRecurringDialogOpen(true)}><Plus className="mr-2 h-4 w-4" /> Add Recurring</Button>
                 </>
@@ -558,7 +642,7 @@ export default function ExpensesPage() {
             </div>
           </motion.div>
 
-          {/* Stats Cards */}
+          {/* Stats */}
           {activeTab === "expenses" && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid gap-4 md:grid-cols-4">
               <Card className="border-l-4 border-l-rose-500 shadow-lg hover:shadow-xl transition-all hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
@@ -580,32 +664,19 @@ export default function ExpensesPage() {
               <TabsTrigger value="recurring" className="rounded-full">Recurring</TabsTrigger>
             </TabsList>
 
-            {/* ---------- EXPENSES TAB ---------- */}
+            {/* Expenses Tab */}
             <TabsContent value="expenses" className="space-y-4">
               <Card className="border-0 shadow-xl bg-white/70 dark:bg-slate-900/70 backdrop-blur-md">
                 <CardContent className="p-4">
                   <div className="flex flex-wrap gap-3 mb-4">
-                    <div className="relative flex-1 min-w-[200px]">
-                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input placeholder="Search expenses..." value={expenseFilter.search} onChange={e => setExpenseFilter({ ...expenseFilter, search: e.target.value })} className="pl-9" />
-                    </div>
+                    <div className="relative flex-1 min-w-[200px]"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input placeholder="Search expenses..." value={expenseFilter.search} onChange={e => setExpenseFilter({ ...expenseFilter, search: e.target.value })} className="pl-9" /></div>
                     <Select value={expenseFilter.categoryId || "all"} onValueChange={v => setExpenseFilter({ ...expenseFilter, categoryId: v === "all" ? "" : v })}>
                       <SelectTrigger className="w-[180px]"><SelectValue placeholder="All Categories" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">All Categories</SelectItem>
-                        {expenseCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                      </SelectContent>
+                      <SelectContent><SelectItem value="all">All Categories</SelectItem>{expenseCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
                     </Select>
                     <Select value={expenseFilter.referenceType || "all"} onValueChange={v => setExpenseFilter({ ...expenseFilter, referenceType: v === "all" ? "" : v })}>
                       <SelectTrigger className="w-[150px]"><SelectValue placeholder="All Types" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">All Types</SelectItem>
-                        <SelectItem value="general">General</SelectItem>
-                        <SelectItem value="recurring">Recurring</SelectItem>
-                        <SelectItem value="plan">Plan</SelectItem>
-                        <SelectItem value="personal">Personal</SelectItem>
-                        <SelectItem value="stock">Stock</SelectItem>
-                      </SelectContent>
+                      <SelectContent><SelectItem value="all">All Types</SelectItem><SelectItem value="general">General</SelectItem><SelectItem value="recurring">Recurring</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="personal">Personal</SelectItem><SelectItem value="stock">Stock</SelectItem></SelectContent>
                     </Select>
                     <div className="flex gap-1">
                       <Tooltip><TooltipTrigger asChild><Button variant={dateRangePreset === "today" ? "default" : "outline"} size="sm" onClick={() => applyDatePreset("today")}>Today</Button></TooltipTrigger><TooltipContent>Today</TooltipContent></Tooltip>
@@ -616,32 +687,23 @@ export default function ExpensesPage() {
                   </div>
                   <div className="overflow-x-auto">
                     <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Title</TableHead>
-                          <TableHead>Category</TableHead>
-                          <TableHead>Amount</TableHead>
-                          <TableHead>Date</TableHead>
-                          <TableHead>Type</TableHead>
-                          <TableHead>Actions</TableHead>
-                        </TableRow>
-                      </TableHeader>
+                      <TableHeader><TableRow><TableHead>Title</TableHead><TableHead>Category</TableHead><TableHead>Amount</TableHead><TableHead>Date</TableHead><TableHead>Type</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader>
                       <TableBody>
-                        {expenses.map(exp => (
-                          <TableRow key={exp.id} className="group">
-                            <TableCell className="font-medium">{exp.title}</TableCell>
-                            <TableCell><Badge variant="secondary">{exp.category?.name || "—"}</Badge></TableCell>
-                            <TableCell className="font-mono font-semibold">{exp.amount.toFixed(2)} {CURRENCY}</TableCell>
-                            <TableCell>{format(new Date(exp.expenseDate), "PP")}</TableCell>
-                            <TableCell><Badge variant="outline" className="capitalize">{exp.referenceType}</Badge></TableCell>
-                            <TableCell>
-                              <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <AnimatePresence>
+                          {expenses.map(exp => (
+                            <motion.tr key={exp.id} initial={{ opacity: 1 }} exit={{ opacity: 0, x: -100 }} transition={{ duration: 0.2 }} className="group">
+                              <TableCell className="font-medium">{exp.title}</TableCell>
+                              <TableCell><Badge variant="secondary">{exp.category?.name || "—"}</Badge></TableCell>
+                              <TableCell className="font-mono font-semibold">{exp.amount.toFixed(2)} {CURRENCY}</TableCell>
+                              <TableCell>{format(new Date(exp.expenseDate), "PP")}</TableCell>
+                              <TableCell><Badge variant="outline" className="capitalize">{exp.referenceType}</Badge></TableCell>
+                              <TableCell><div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <Button variant="ghost" size="icon" onClick={() => openExpenseDialog(exp)}><Edit3 className="h-4 w-4" /></Button>
-                                <Button variant="ghost" size="icon" onClick={() => handleDeleteExpense(exp.id)}><Trash2 className="h-4 w-4 text-rose-500" /></Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
+                                <Button variant="ghost" size="icon" onClick={() => confirmDelete("expense", exp.id, exp.title, exp, async () => { await api.delete(`/expenses/${exp.id}`); toast.success("Expense deleted", { position: "bottom-left" }); })}><Trash2 className="h-4 w-4 text-rose-500" /></Button>
+                              </div></TableCell>
+                            </motion.tr>
+                          ))}
+                        </AnimatePresence>
                         {expenses.length === 0 && <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">No expenses found.</TableCell></TableRow>}
                       </TableBody>
                     </Table>
@@ -657,83 +719,78 @@ export default function ExpensesPage() {
               </Card>
             </TabsContent>
 
-            {/* ---------- CATEGORIES TAB ---------- */}
+            {/* Categories Tab */}
             <TabsContent value="categories" className="space-y-4">
               <Card className="border-0 shadow-xl bg-white/70 dark:bg-slate-900/70 backdrop-blur-md">
                 <CardContent className="p-4">
                   <div className="space-y-2">
-                    {expenseCategories.filter(c => !c.parentId).map(cat => (
-                      <CategoryTreeNode
-                        key={cat.id}
-                        category={cat}
-                        allCategories={expenseCategories}
-                        onDelete={handleDeleteCategory}
-                        onRefresh={fetchCategories}
-                      />
-                    ))}
+                    <AnimatePresence>
+                      {expenseCategories.map(cat => (
+                        <motion.div key={cat.id} initial={{ opacity: 1 }} exit={{ opacity: 0, x: -100 }} transition={{ duration: 0.2 }} className="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+                          <span className="font-medium flex-1">{cat.name}</span>
+                          <Button variant="ghost" size="icon" onClick={() => confirmDelete("category", cat.id, cat.name, cat, async () => { await api.delete(`/expense-categories/${cat.id}`); toast.success("Category deleted", { position: "bottom-left" }); })}><Trash2 className="h-4 w-4 text-rose-500" /></Button>
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
                     {expenseCategories.length === 0 && <p className="text-center text-muted-foreground py-8">No categories yet.</p>}
                   </div>
                 </CardContent>
               </Card>
             </TabsContent>
 
-            {/* ---------- PLANS TAB ---------- */}
+            {/* Plans Tab - removed "View Expenses" button */}
             <TabsContent value="plans" className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {expensePlans.map(plan => {
-                  const progress = (plan.currentAllocatedAmount / plan.targetAmount) * 100;
-                  return (
-                    <Card key={plan.id} className="overflow-hidden hover:shadow-xl transition-all">
-                      <CardHeader className="pb-2">
-                        <CardTitle className="flex justify-between items-center">
-                          <span>{plan.title}</span>
-                          <Badge variant={plan.status === "active" ? "default" : plan.status === "completed" ? "outline" : "secondary"}>
-                            {plan.status}
-                          </Badge>
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-3">
-                        <div className="flex justify-between text-sm"><span>Allocated:</span><span className="font-mono">{plan.currentAllocatedAmount.toFixed(2)} {CURRENCY}</span></div>
-                        <div className="flex justify-between text-sm"><span>Target:</span><span className="font-mono">{plan.targetAmount.toFixed(2)} {CURRENCY}</span></div>
-                        <Progress value={progress} className="h-2" />
-                        <p className="text-xs text-muted-foreground">{progress.toFixed(0)}% achieved</p>
-                        {plan.targetDate && <p className="text-xs flex items-center gap-1"><Calendar className="h-3 w-3" /> Target: {format(new Date(plan.targetDate), "PPP")}</p>}
-                        <div className="flex gap-2 pt-2">
-                          <Button variant="outline" size="sm" onClick={() => router.push(`/expenses/plan/${plan.id}`)}>View Expenses</Button>
-                          <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" onClick={() => handleRefreshPlan(plan.id)}><RefreshCw className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Refresh allocation</TooltipContent></Tooltip>
-                          <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" onClick={() => handleDeletePlan(plan.id)}><Trash2 className="h-4 w-4 text-rose-500" /></Button></TooltipTrigger><TooltipContent>Delete plan</TooltipContent></Tooltip>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  );
-                })}
+                <AnimatePresence>
+                  {expensePlans.map(plan => {
+                    const progress = (plan.currentAllocatedAmount / plan.targetAmount) * 100;
+                    return (
+                      <motion.div key={plan.id} initial={{ opacity: 1 }} exit={{ opacity: 0, scale: 0.9 }} transition={{ duration: 0.2 }}>
+                        <Card className="overflow-hidden hover:shadow-xl transition-all">
+                          <CardHeader className="pb-2">
+                            <CardTitle className="flex justify-between items-center"><span>{plan.title}</span><Badge variant={plan.status === "active" ? "default" : plan.status === "completed" ? "outline" : "secondary"}>{plan.status}</Badge></CardTitle>
+                          </CardHeader>
+                          <CardContent className="space-y-3">
+                            <div className="flex justify-between text-sm"><span>Allocated:</span><span className="font-mono">{plan.currentAllocatedAmount.toFixed(2)} {CURRENCY}</span></div>
+                            <div className="flex justify-between text-sm"><span>Target:</span><span className="font-mono">{plan.targetAmount.toFixed(2)} {CURRENCY}</span></div>
+                            <Progress value={progress} className="h-2" /><p className="text-xs text-muted-foreground">{progress.toFixed(0)}% achieved</p>
+                            {plan.targetDate && <p className="text-xs flex items-center gap-1"><Calendar className="h-3 w-3" /> Target: {format(new Date(plan.targetDate), "PPP")}</p>}
+                            <div className="flex gap-2 pt-2">
+                              {/* "View Expenses" button removed */}
+                              <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" onClick={() => handleRefreshPlan(plan.id)}><RefreshCw className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Refresh allocation</TooltipContent></Tooltip>
+                              <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" onClick={() => confirmDelete("plan", plan.id, plan.title, plan, async () => { await api.delete(`/expense-plans/${plan.id}`); toast.success("Plan deleted", { position: "bottom-left" }); })}><Trash2 className="h-4 w-4 text-rose-500" /></Button></TooltipTrigger><TooltipContent>Delete plan</TooltipContent></Tooltip>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
                 {expensePlans.length === 0 && <p className="text-center text-muted-foreground py-8 col-span-full">No plans created yet.</p>}
               </div>
             </TabsContent>
 
-            {/* ---------- RECURRING TAB ---------- */}
+            {/* Recurring Tab */}
             <TabsContent value="recurring" className="space-y-4">
               <Card className="border-0 shadow-xl">
                 <CardContent className="p-4">
                   <Table>
-                    <TableHeader>
-                      <TableRow><TableHead>Title</TableHead><TableHead>Category</TableHead><TableHead>Amount</TableHead><TableHead>Frequency</TableHead><TableHead>Billing Day</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow>
-                    </TableHeader>
+                    <TableHeader><TableRow><TableHead>Title</TableHead><TableHead>Category</TableHead><TableHead>Amount</TableHead><TableHead>Frequency</TableHead><TableHead>Billing Day</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader>
                     <TableBody>
-                      {recurringExpenses.map(re => (
-                        <TableRow key={re.id}>
-                          <TableCell>{re.title}</TableCell>
-                          <TableCell>{re.category?.name || "—"}</TableCell>
-                          <TableCell className="font-mono">{re.amount.toFixed(2)} {CURRENCY}</TableCell>
-                          <TableCell className="capitalize">{re.frequency}</TableCell>
-                          <TableCell>{re.billingDay}</TableCell>
-                          <TableCell><Badge variant={re.isActive ? "default" : "secondary"}>{re.isActive ? "Active" : "Inactive"}</Badge></TableCell>
-                          <TableCell className="flex gap-1">
-                            <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" onClick={() => handlePreviewRecurring(re.id)}><Calendar className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Preview</TooltipContent></Tooltip>
-                            <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" onClick={() => handleDeleteRecurring(re.id)}><Trash2 className="h-4 w-4 text-rose-500" /></Button></TooltipTrigger><TooltipContent>Delete</TooltipContent></Tooltip>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      <AnimatePresence>
+                        {recurringExpenses.map(re => (
+                          <motion.tr key={re.id} initial={{ opacity: 1 }} exit={{ opacity: 0, x: -100 }} transition={{ duration: 0.2 }}>
+                            <TableCell>{re.title}</TableCell><TableCell>{re.category?.name || "—"}</TableCell>
+                            <TableCell className="font-mono">{re.amount.toFixed(2)} {CURRENCY}</TableCell>
+                            <TableCell className="capitalize">{re.frequency}</TableCell><TableCell>{re.billingDay}</TableCell>
+                            <TableCell><Badge variant={re.isActive ? "default" : "secondary"}>{re.isActive ? "Active" : "Inactive"}</Badge></TableCell>
+                            <TableCell className="flex gap-1">
+                              <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" onClick={() => handlePreviewRecurring(re.id)}><Calendar className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Preview</TooltipContent></Tooltip>
+                              <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" onClick={() => confirmDelete("recurring", re.id, re.title, re, async () => { await api.delete(`/recurring-expenses/${re.id}`); toast.success("Recurring expense deleted", { position: "bottom-left" }); })}><Trash2 className="h-4 w-4 text-rose-500" /></Button></TooltipTrigger><TooltipContent>Delete</TooltipContent></Tooltip>
+                            </TableCell>
+                          </motion.tr>
+                        ))}
+                      </AnimatePresence>
                       {recurringExpenses.length === 0 && <TableRow><TableCell colSpan={7} className="text-center py-8">No recurring expenses.</TableCell></TableRow>}
                     </TableBody>
                   </Table>
@@ -744,157 +801,86 @@ export default function ExpensesPage() {
         </div>
       </div>
 
-      {/* Expense Dialog with inline category/plan creation */}
+      {/* Dialogs (unchanged) */}
       <Dialog open={expenseDialogOpen} onOpenChange={setExpenseDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>{editingItem ? "Edit Expense" : "New Expense"}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div><Label>Title</Label><Input value={expenseForm.title} onChange={e => setExpenseForm({ ...expenseForm, title: e.target.value })} /></div>
-            <div><Label>Amount ({CURRENCY})</Label>
-              <Input type="number" step="0.01" value={expenseForm.amount} onChange={e => setExpenseForm({ ...expenseForm, amount: e.target.value })} />
-              <div className="flex gap-2 mt-1">
-                {QUICK_AMOUNTS.map(amt => (
-                  <Button key={amt} variant="outline" size="sm" onClick={() => setExpenseForm({ ...expenseForm, amount: amt.toString() })}>{amt}</Button>
-                ))}
-              </div>
-            </div>
+            <div><Label>Amount ({CURRENCY})</Label><Input type="number" step="0.01" value={expenseForm.amount} onChange={e => setExpenseForm({ ...expenseForm, amount: e.target.value })} /><div className="flex gap-2 mt-1">{QUICK_AMOUNTS.map(amt => <Button key={amt} variant="outline" size="sm" onClick={() => setExpenseForm({ ...expenseForm, amount: amt.toString() })}>{amt}</Button>)}</div></div>
             <div><Label>Date</Label><Input type="date" value={expenseForm.expenseDate} onChange={e => setExpenseForm({ ...expenseForm, expenseDate: e.target.value })} /></div>
-            <div><Label>Category</Label>
-              <div className="flex gap-2">
-                <Select value={expenseForm.categoryId} onValueChange={v => setExpenseForm({ ...expenseForm, categoryId: v })}>
-                  <SelectTrigger className="flex-1"><SelectValue placeholder="Select category" /></SelectTrigger>
-                  <SelectContent>
-                    {expenseCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                <Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" onClick={() => setShowQuickCategoryDialog(true)}><FolderPlus className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Create new category</TooltipContent></Tooltip>
-              </div>
-            </div>
-            <div><Label>Reference Type</Label>
-              <Select value={expenseForm.referenceType} onValueChange={v => setExpenseForm({ ...expenseForm, referenceType: v as ExpenseReferenceType })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="general">General</SelectItem>
-                  <SelectItem value="recurring">Recurring</SelectItem>
-                  <SelectItem value="plan">Plan</SelectItem>
-                  <SelectItem value="personal">Personal</SelectItem>
-                  <SelectItem value="stock">Stock</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <div><Label>Category</Label><div className="flex gap-2"><Select value={expenseForm.categoryId} onValueChange={v => setExpenseForm({ ...expenseForm, categoryId: v })}><SelectTrigger className="flex-1"><SelectValue placeholder="Select category" /></SelectTrigger><SelectContent>{expenseCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent></Select><Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" onClick={() => setShowQuickCategoryDialog(true)}><FolderPlus className="h-4 w-4" /></Button></TooltipTrigger><TooltipContent>Create new category</TooltipContent></Tooltip></div></div>
+            <div><Label>Reference Type</Label><Select value={expenseForm.referenceType} onValueChange={v => setExpenseForm({ ...expenseForm, referenceType: v as ExpenseReferenceType })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="general">General</SelectItem><SelectItem value="recurring">Recurring</SelectItem><SelectItem value="plan">Plan</SelectItem><SelectItem value="personal">Personal</SelectItem><SelectItem value="stock">Stock</SelectItem></SelectContent></Select></div>
             <div><Label>Notes</Label><Textarea value={expenseForm.notes} onChange={e => setExpenseForm({ ...expenseForm, notes: e.target.value })} /></div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setExpenseDialogOpen(false)}>Cancel</Button>
-            <Button onClick={editingItem ? handleUpdateExpense : handleCreateExpense}>{editingItem ? "Update" : "Create"}</Button>
-          </DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setExpenseDialogOpen(false)}>Cancel</Button><Button onClick={editingItem ? handleUpdateExpense : handleCreateExpense}>{editingItem ? "Update" : "Create"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Quick Category Dialog - fixed empty string value */}
       <Dialog open={showQuickCategoryDialog} onOpenChange={setShowQuickCategoryDialog}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Create New Category</DialogTitle><DialogDescription>Add a category for your expense</DialogDescription></DialogHeader>
-          <div className="space-y-3">
-            <div><Label>Name</Label><Input value={quickCategoryName} onChange={e => setQuickCategoryName(e.target.value)} autoFocus /></div>
-            <div><Label>Parent Category (optional)</Label>
-              <Select value={quickCategoryParentId} onValueChange={setQuickCategoryParentId}>
-                <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">None</SelectItem>
-                  {expenseCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter><Button variant="outline" onClick={() => setShowQuickCategoryDialog(false)}>Cancel</Button><Button onClick={handleQuickCreateCategory}>Create</Button></DialogFooter>
-        </DialogContent>
+        <DialogContent><DialogHeader><DialogTitle>Create New Category</DialogTitle><DialogDescription>Add a category for your expense</DialogDescription></DialogHeader><div className="space-y-3"><div><Label>Name</Label><Input value={quickCategoryName} onChange={e => setQuickCategoryName(e.target.value)} autoFocus /></div></div><DialogFooter><Button variant="outline" onClick={() => setShowQuickCategoryDialog(false)}>Cancel</Button><Button onClick={handleQuickCreateCategory}>Create</Button></DialogFooter></DialogContent>
       </Dialog>
 
-      {/* Quick Plan Dialog */}
       <Dialog open={showQuickPlanDialog} onOpenChange={setShowQuickPlanDialog}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Create New Plan</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div><Label>Plan Title</Label><Input value={quickPlanTitle} onChange={e => setQuickPlanTitle(e.target.value)} /></div>
-            <div><Label>Target Amount ({CURRENCY})</Label><Input type="number" step="0.01" value={quickPlanTarget} onChange={e => setQuickPlanTarget(e.target.value)} /></div>
-          </div>
-          <DialogFooter><Button variant="outline" onClick={() => setShowQuickPlanDialog(false)}>Cancel</Button><Button onClick={handleQuickCreatePlan}>Create Plan</Button></DialogFooter>
-        </DialogContent>
+        <DialogContent><DialogHeader><DialogTitle>Create New Plan</DialogTitle></DialogHeader><div className="space-y-3"><div><Label>Plan Title</Label><Input value={quickPlanTitle} onChange={e => setQuickPlanTitle(e.target.value)} /></div><div><Label>Target Amount ({CURRENCY})</Label><Input type="number" step="0.01" value={quickPlanTarget} onChange={e => setQuickPlanTarget(e.target.value)} /></div></div><DialogFooter><Button variant="outline" onClick={() => setShowQuickPlanDialog(false)}>Cancel</Button><Button onClick={handleQuickCreatePlan}>Create Plan</Button></DialogFooter></DialogContent>
       </Dialog>
 
-      {/* Category Dialog - fixed empty string */}
       <Dialog open={categoryDialogOpen} onOpenChange={setCategoryDialogOpen}>
-        <DialogContent><DialogHeader><DialogTitle>Add Category</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div><Label>Name</Label><Input value={categoryForm.name} onChange={e => setCategoryForm({ ...categoryForm, name: e.target.value })} /></div>
-            <div><Label>Description</Label><Textarea value={categoryForm.description} onChange={e => setCategoryForm({ ...categoryForm, description: e.target.value })} /></div>
-            <div><Label>Parent Category</Label>
-              <Select value={categoryForm.parentId} onValueChange={v => setCategoryForm({ ...categoryForm, parentId: v })}>
-                <SelectTrigger><SelectValue placeholder="None (top-level)" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">None</SelectItem>
-                  {expenseCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter><Button variant="outline" onClick={() => setCategoryDialogOpen(false)}>Cancel</Button><Button onClick={handleCreateCategory}>Create</Button></DialogFooter>
-        </DialogContent>
+        <DialogContent><DialogHeader><DialogTitle>Add Category</DialogTitle></DialogHeader><div className="space-y-3"><div><Label>Name</Label><Input value={categoryForm.name} onChange={e => setCategoryForm({ ...categoryForm, name: e.target.value })} /></div><div><Label>Description</Label><Textarea value={categoryForm.description} onChange={e => setCategoryForm({ ...categoryForm, description: e.target.value })} /></div></div><DialogFooter><Button variant="outline" onClick={() => setCategoryDialogOpen(false)}>Cancel</Button><Button onClick={handleCreateCategory}>Create</Button></DialogFooter></DialogContent>
       </Dialog>
 
-      {/* Plan Dialog */}
       <Dialog open={planDialogOpen} onOpenChange={setPlanDialogOpen}>
-        <DialogContent><DialogHeader><DialogTitle>Create Expense Plan</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div><Label>Title</Label><Input value={planForm.title} onChange={e => setPlanForm({ ...planForm, title: e.target.value })} /></div>
-            <div><Label>Target Amount ({CURRENCY})</Label><Input type="number" step="0.01" value={planForm.targetAmount} onChange={e => setPlanForm({ ...planForm, targetAmount: e.target.value })} /></div>
-            <div><Label>Target Date (optional)</Label><Input type="date" value={planForm.targetDate} onChange={e => setPlanForm({ ...planForm, targetDate: e.target.value })} /></div>
-            <div><Label>Status</Label><Select value={planForm.status} onValueChange={v => setPlanForm({ ...planForm, status: v as ExpensePlanStatus })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="planned">Planned</SelectItem><SelectItem value="active">Active</SelectItem><SelectItem value="completed">Completed</SelectItem><SelectItem value="cancelled">Cancelled</SelectItem></SelectContent></Select></div>
-            <div><Label>Notes</Label><Textarea value={planForm.notes} onChange={e => setPlanForm({ ...planForm, notes: e.target.value })} /></div>
-          </div>
-          <DialogFooter><Button variant="outline" onClick={() => setPlanDialogOpen(false)}>Cancel</Button><Button onClick={handleCreatePlan}>Create Plan</Button></DialogFooter>
-        </DialogContent>
+        <DialogContent><DialogHeader><DialogTitle>Create Expense Plan</DialogTitle></DialogHeader><div className="space-y-3"><div><Label>Title</Label><Input value={planForm.title} onChange={e => setPlanForm({ ...planForm, title: e.target.value })} /></div><div><Label>Target Amount ({CURRENCY})</Label><Input type="number" step="0.01" value={planForm.targetAmount} onChange={e => setPlanForm({ ...planForm, targetAmount: e.target.value })} /></div><div><Label>Target Date (optional)</Label><Input type="date" value={planForm.targetDate} onChange={e => setPlanForm({ ...planForm, targetDate: e.target.value })} /></div><div><Label>Status</Label><Select value={planForm.status} onValueChange={v => setPlanForm({ ...planForm, status: v as ExpensePlanStatus })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="planned">Planned</SelectItem><SelectItem value="active">Active</SelectItem><SelectItem value="completed">Completed</SelectItem><SelectItem value="cancelled">Cancelled</SelectItem></SelectContent></Select></div><div><Label>Notes</Label><Textarea value={planForm.notes} onChange={e => setPlanForm({ ...planForm, notes: e.target.value })} /></div></div><DialogFooter><Button variant="outline" onClick={() => setPlanDialogOpen(false)}>Cancel</Button><Button onClick={handleCreatePlan}>Create Plan</Button></DialogFooter></DialogContent>
       </Dialog>
 
-      {/* Recurring Dialog */}
       <Dialog open={recurringDialogOpen} onOpenChange={setRecurringDialogOpen}>
-        <DialogContent><DialogHeader><DialogTitle>Add Recurring Expense</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div><Label>Title</Label><Input value={recurringForm.title} onChange={e => setRecurringForm({ ...recurringForm, title: e.target.value })} /></div>
-            <div><Label>Category</Label><Select value={recurringForm.categoryId} onValueChange={v => setRecurringForm({ ...recurringForm, categoryId: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{expenseCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent></Select></div>
-            <div><Label>Amount ({CURRENCY})</Label><Input type="number" step="0.01" value={recurringForm.amount} onChange={e => setRecurringForm({ ...recurringForm, amount: e.target.value })} /></div>
-            <div><Label>Frequency</Label><Select value={recurringForm.frequency} onValueChange={v => setRecurringForm({ ...recurringForm, frequency: v as RecurringFrequency })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="daily">Daily</SelectItem><SelectItem value="weekly">Weekly</SelectItem><SelectItem value="monthly">Monthly</SelectItem><SelectItem value="yearly">Yearly</SelectItem></SelectContent></Select></div>
-            <div><Label>Billing Day (1-31)</Label><Input type="number" min={1} max={31} value={recurringForm.billingDay} onChange={e => setRecurringForm({ ...recurringForm, billingDay: e.target.value })} /></div>
-            <div><Label>Notes</Label><Textarea value={recurringForm.notes} onChange={e => setRecurringForm({ ...recurringForm, notes: e.target.value })} /></div>
-          </div>
-          <DialogFooter><Button variant="outline" onClick={() => setRecurringDialogOpen(false)}>Cancel</Button><Button onClick={handleCreateRecurring}>Create</Button></DialogFooter>
-        </DialogContent>
+        <DialogContent><DialogHeader><DialogTitle>Add Recurring Expense</DialogTitle></DialogHeader><div className="space-y-3"><div><Label>Title</Label><Input value={recurringForm.title} onChange={e => setRecurringForm({ ...recurringForm, title: e.target.value })} /></div><div><Label>Category</Label><Select value={recurringForm.categoryId} onValueChange={v => setRecurringForm({ ...recurringForm, categoryId: v })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{expenseCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent></Select></div><div><Label>Amount ({CURRENCY})</Label><Input type="number" step="0.01" value={recurringForm.amount} onChange={e => setRecurringForm({ ...recurringForm, amount: e.target.value })} /></div><div><Label>Frequency</Label><Select value={recurringForm.frequency} onValueChange={v => setRecurringForm({ ...recurringForm, frequency: v as RecurringFrequency })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="daily">Daily</SelectItem><SelectItem value="weekly">Weekly</SelectItem><SelectItem value="monthly">Monthly</SelectItem><SelectItem value="yearly">Yearly</SelectItem></SelectContent></Select></div><div><Label>Billing Day (1-31)</Label><Input type="number" min={1} max={31} value={recurringForm.billingDay} onChange={e => setRecurringForm({ ...recurringForm, billingDay: e.target.value })} /></div><div><Label>Notes</Label><Textarea value={recurringForm.notes} onChange={e => setRecurringForm({ ...recurringForm, notes: e.target.value })} /></div></div><DialogFooter><Button variant="outline" onClick={() => setRecurringDialogOpen(false)}>Cancel</Button><Button onClick={handleCreateRecurring}>Create</Button></DialogFooter></DialogContent>
       </Dialog>
 
-      {/* Preview Dates Dialog */}
       <Dialog open={previewDatesOpen} onOpenChange={setPreviewDatesOpen}>
-        <DialogContent><DialogHeader><DialogTitle>Upcoming Dates (6 months)</DialogTitle></DialogHeader>
-          <div className="max-h-96 overflow-y-auto"><ul>{previewDates.map((d, i) => <li key={i} className="py-1 border-b">{format(d, "PPP")}</li>)}</ul></div>
-        </DialogContent>
+        <DialogContent><DialogHeader><DialogTitle>Upcoming Dates (6 months)</DialogTitle></DialogHeader><div className="max-h-96 overflow-y-auto"><ul>{previewDates.map((d, i) => <li key={i} className="py-1 border-b">{format(d, "PPP")}</li>)}</ul></div></DialogContent>
       </Dialog>
-    </TooltipProvider>
-  );
-}
 
-// Helper component for category tree
-function CategoryTreeNode({ category, allCategories, onDelete, onRefresh }: { category: ExpenseCategory; allCategories: ExpenseCategory[]; onDelete: (id: string) => void; onRefresh: () => void }) {
-  const children = allCategories.filter(c => c.parentId === category.id);
-  const [expanded, setExpanded] = useState(true);
-  return (
-    <div className="ml-4 border-l pl-2">
-      <div className="flex items-center gap-2 py-1">
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setExpanded(!expanded)}><ChevronRight className={cn("h-4 w-4 transition-transform", expanded && "rotate-90")} /></Button>
-        <span className="font-medium">{category.name}</span>
-        {children.length > 0 && <Badge variant="outline">{children.length} sub</Badge>}
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => onDelete(category.id)}><Trash2 className="h-3 w-3 text-rose-500" /></Button>
-      </div>
-      {expanded && children.map(child => <CategoryTreeNode key={child.id} category={child} allCategories={allCategories} onDelete={onDelete} onRefresh={onRefresh} />)}
-    </div>
+      {/* Delete Confirmation */}
+      <AlertDialog open={deleteConfirm !== null} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader><AlertDialogTitle>Confirm Deletion</AlertDialogTitle><AlertDialogDescription>Are you sure you want to delete "{deleteConfirm?.title}"? This action cannot be undone.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel onClick={() => setDeleteConfirm(null)}>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => { if (deleteConfirm) { optimisticDelete(deleteConfirm.type, deleteConfirm.id, deleteConfirm.title, deleteConfirm.optimisticData, deleteConfirm.deleteFn); setDeleteConfirm(null); } }} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Force Delete Dialog */}
+      <AlertDialog open={forceDeleteDialog !== null} onOpenChange={(open) => !open && setForceDeleteDialog(null)}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2"><AlertTriangle className="h-5 w-5 text-amber-500" /> Force Delete Category</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <div>Category "{forceDeleteDialog?.title}" has subcategories or linked expenses.</div>
+                <div><strong>Force delete</strong> will:</div>
+                <div className="pl-4">
+                  <ul className="list-disc space-y-1">
+                    <li>Delete this category and all its subcategories</li>
+                    <li>Optionally reassign all linked expenses to another category</li>
+                  </ul>
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="py-3">
+            <Label className="text-sm font-medium">Reassign expenses to (optional)</Label>
+            <Select value={forceReassignTo} onValueChange={setForceReassignTo}>
+              <SelectTrigger className="mt-1"><SelectValue placeholder="Delete expenses (no reassign)" /></SelectTrigger>
+              <SelectContent><SelectItem value="none">Delete expenses (no reassign)</SelectItem>{expenseCategories.filter(c => c.id !== forceDeleteDialog?.id).map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground mt-2">{forceReassignTo === "none" ? "All expenses in this category will be permanently deleted." : "All expenses will be moved to the selected category."}</p>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setForceDeleteDialog(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleForceDelete} disabled={forceLoading} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{forceLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Force Delete"}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </TooltipProvider>
   );
 }
