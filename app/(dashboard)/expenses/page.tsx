@@ -69,7 +69,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-// ─── Log the API base URL to help debug ───
+// ─── Log API base URL ───
 console.log("🧪 API base URL:", (api as any).defaults?.baseURL || "Not set");
 
 // ==================== TYPES ====================
@@ -215,9 +215,20 @@ export default function ExpensesPage() {
   // ─── Enhanced error logging ───
   const handleApiError = (err: any, operation: string) => {
     console.error(`❌ ${operation} error:`, err);
-    const message = err.response?.data?.message || err.message || "Unknown error";
-    const status = err.response?.status || "no status";
-    console.error(`   Status: ${status}, URL: ${err.config?.url}`);
+    let message = "Unknown error";
+    let status = "no status";
+    let url = "unknown";
+    if (err.response) {
+      message = err.response.data?.message || err.message;
+      status = err.response.status;
+      url = err.config?.url;
+    } else if (err.request) {
+      message = "No response from server (timeout or network error)";
+      url = err.config?.url;
+    } else {
+      message = err.message;
+    }
+    console.error(`   Status: ${status}, URL: ${url}`);
     toast.error(`${operation} failed: ${message}`, { position: "bottom-left" });
   };
 
@@ -444,8 +455,11 @@ export default function ExpensesPage() {
     }
   };
 
-  // ---------- CRUD Handlers ----------
+  // ══════════════════════════════════════════════════════════════
+  //  FIXED: CREATE EXPENSE WITH TIMEOUT AND DETAILED LOGGING
+  // ══════════════════════════════════════════════════════════════
   const handleCreateExpense = async () => {
+    // ── Validation ──
     if (!expenseForm.title.trim()) {
       toast.error("Title is required", { position: "bottom-left" });
       return;
@@ -459,26 +473,44 @@ export default function ExpensesPage() {
       return;
     }
 
+    // ── Set loading state ──
     setIsCreatingExpense(true);
     const idempotencyKey = getIdempotencyKey();
+
+    const payload = {
+      title: expenseForm.title.trim(),
+      amount: parseFloat(expenseForm.amount),
+      expenseDate: expenseForm.expenseDate || undefined,
+      categoryId: expenseForm.categoryId,
+      referenceType: expenseForm.referenceType,
+      notes: expenseForm.notes || undefined,
+    };
+
+    console.log("📤 Creating expense with payload:", payload);
+    console.log("📤 Idempotency-Key:", idempotencyKey);
+
     try {
-      const payload = {
-        title: expenseForm.title.trim(),
-        amount: parseFloat(expenseForm.amount),
-        expenseDate: expenseForm.expenseDate || undefined,
-        categoryId: expenseForm.categoryId,
-        referenceType: expenseForm.referenceType,
-        notes: expenseForm.notes || undefined,
-      };
-      console.log("📤 Creating expense with payload:", payload);
-      await api.post("/expenses", payload, { headers: { "Idempotency-Key": idempotencyKey } });
+      // ── Make the request with a 30-second timeout ──
+      const res = await api.post("/expenses", payload, {
+        headers: { "Idempotency-Key": idempotencyKey },
+        timeout: 30000, // 30 seconds
+      });
+
+      console.log("✅ Expense created:", res.data);
       toast.success("Expense created", { position: "bottom-left" });
       setExpenseDialogOpen(false);
       resetExpenseForm();
       await fetchExpenses();
     } catch (err: any) {
-      handleApiError(err, "Create expense");
+      console.error("❌ Create expense error (full):", err);
+      // Check if it's a timeout
+      if (err.code === "ECONNABORTED" || err.message.includes("timeout")) {
+        toast.error("Request timed out – server took too long to respond", { position: "bottom-left" });
+      } else {
+        handleApiError(err, "Create expense");
+      }
     } finally {
+      // ── ALWAYS reset loading state ──
       setIsCreatingExpense(false);
     }
   };
