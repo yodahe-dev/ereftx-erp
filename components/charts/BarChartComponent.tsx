@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import React from "react";
+import React from 'react';
 import {
   BarChart,
   Bar,
@@ -9,8 +9,8 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-} from "recharts";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+} from 'recharts';
+import { motion } from 'framer-motion';
 
 interface BarChartData {
   name: string;
@@ -31,46 +31,57 @@ export function BarChartComponent({
   title,
   data,
   dataKey,
-  colorStart = "#10b981",
-  colorEnd = "#06b6d4",
+  colorStart = '#3B82F6',
+  colorEnd = '#8B5CF6',
   height = 300,
 }: BarChartComponentProps) {
-  const gradientId = `gradient-${Math.random().toString(36).substr(2, 9)}`;
+  const gradientId = React.useId();
 
   return (
-    <Card className="bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 lg:p-8 transition-all">
-      <CardHeader>
-        <CardTitle className="text-white text-xl">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <ResponsiveContainer width="100%" height={height}>
-          <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-            <XAxis
-              dataKey="name"
-              angle={-45}
-              textAnchor="end"
-              height={70}
-              tick={{ fill: "#aaa", fontSize: 11 }}
-            />
-            <YAxis stroke="#aaa" />
-            <Tooltip
-              contentStyle={{ backgroundColor: "#1e1e2f", borderColor: colorStart }}
-              labelFormatter={(label) => {
-                const item = data.find((d) => d.name === label);
-                return item?.fullName || label;
-              }}
-            />
-            <defs>
-              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={colorStart} stopOpacity={0.9} />
-                <stop offset="100%" stopColor={colorEnd} stopOpacity={0.6} />
-              </linearGradient>
-            </defs>
-            <Bar dataKey={dataKey} fill={`url(#${gradientId})`} radius={[8, 8, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </CardContent>
-    </Card>
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.4 }}
+      className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-6 hover:border-white/20 transition-all duration-300"
+    >
+      <h3 className="text-white font-semibold text-lg mb-4">{title}</h3>
+      <ResponsiveContainer width="100%" height={height}>
+        <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 60 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" />
+          <XAxis
+            dataKey="name"
+            angle={-45}
+            textAnchor="end"
+            height={70}
+            tick={{ fill: '#9CA3AF', fontSize: 11 }}
+          />
+          <YAxis tick={{ fill: '#9CA3AF' }} />
+          <Tooltip
+            contentStyle={{ backgroundColor: '#1A1A24', borderColor: colorStart, borderRadius: '8px' }}
+            labelFormatter={(label) => {
+              const item = data.find((d) => d.name === label);
+              return item?.fullName || label;
+            }}
+            formatter={(value: string | number | readonly (string | number)[] | undefined) => {
+              const numericValue = Array.isArray(value)
+                ? Number(value[0])
+                : typeof value === 'number'
+                ? value
+                : value
+                ? Number(value)
+                : 0;
+              return [`${numericValue.toLocaleString()} restocks`, 'Count'];
+            }}
+          />
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={colorStart} stopOpacity={0.9} />
+              <stop offset="100%" stopColor={colorEnd} stopOpacity={0.6} />
+            </linearGradient>
+          </defs>
+          <Bar dataKey={dataKey} fill={`url(#${gradientId})`} radius={[8, 8, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </motion.div>
   );
 }
