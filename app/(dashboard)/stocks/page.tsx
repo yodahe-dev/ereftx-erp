@@ -1,7 +1,6 @@
 "use client";
 
-import React, { JSX, useEffect, useMemo, useState, useRef } from "react";
-import { api } from "@/lib/api";
+import React, { JSX } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,7 +46,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, Variants } from "framer-motion";
 import {
   Trash2,
   Pencil,
@@ -61,7 +60,6 @@ import {
   ArrowLeftRight,
   Calculator,
   Settings,
-  TrendingUp,
   TrendingDown,
   CheckCircle2,
   Repeat,
@@ -79,6 +77,8 @@ import {
   Pin,
   PinOff,
   MoreHorizontal,
+  Zap,
+  Info,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -99,1201 +99,401 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
-
-// ==================== TYPES ====================
-interface ProductPrice {
-  id: string;
-  productId: string;
-  buyPricePerBox: number;
-  sellPricePerBox: number;
-  sellPricePerUnit: number;
-  startAt: string;
-  endAt: string | null;
-  allowLoss: boolean;
-}
-
-interface Product {
-  id: string;
-  name: string;
-  description?: string | null;
-  unitsPerBox: number;
-  categoryId: string;
-  brandId: string;
-  packagingId: string;
-  prices?: ProductPrice[];
-  buyPricePerBox?: number;
-  sellPricePerBox?: number;
-  sellPricePerUnit?: number;
-  allowLoss?: boolean;
-  currentPriceId?: string;
-}
-
-interface Category {
-  id: string;
-  name: string;
-}
-
-interface Brand {
-  id: string;
-  name: string;
-}
-
-interface Packaging {
-  id: string;
-  name: string;
-}
-
-interface Stock {
-  id: string;
-  productId: string;
-  boxQuantity: number;
-  singleQuantity: number;
-  containerType: ContainerType;
-  createdAt: string;
-  updatedAt: string;
-  product?: Product;
-}
-
-enum ContainerType {
-  BOX = "box",
-  SINGLE = "single",
-}
-
-interface ProductsResponse {
-  data: Product[];
-  page: number;
-  hasMore: boolean;
-  total: number;
-}
-
-interface ExchangeForm {
-  sourceProductId: string;
-  targetProductId: string;
-  exchangeType: "box" | "single";
-  sourceQuantity: number;
-  notes: string;
-}
-
-interface ProductFormData {
-  name: string;
-  description: string;
-  categoryId: string;
-  brandId: string;
-  packagingId: string;
-  unitsPerBox: number;
-  buyPricePerBox: string;
-  sellPricePerBox: string;
-  sellPricePerUnit: string;
-  allowLoss: boolean;
-}
-
-interface StockHistoryRecord {
-  id: string;
-  productId: string;
-  actionType: "initial" | "restock" | "adjust" | "exchange";
-  boxQuantityBefore: number;
-  singleQuantityBefore: number;
-  boxQuantityAfter: number;
-  singleQuantityAfter: number;
-  boxQuantityChange: number;
-  singleQuantityChange: number;
-  notes: string | null;
-  isFree: boolean;
-  createdAt: string;
-}
-
-type AdjustmentMode = "add" | "subtract" | "set";
-type FilterType = "all" | "box" | "single";
-
-// ==================== CONSTANTS ====================
-const STORAGE_FILTER_KEY = "stock-filter-preference";
-const STORAGE_PINNED_FILTER_KEY = "stock-pinned-filter";
-const PRODUCTS_PAGE_LIMIT = 1000;
-const DEFAULT_UNITS_PER_BOX = 24;
-const CURRENCY = "ETB";
-const LOW_STOCK_BOX_THRESHOLD = 2;
-const UNDO_SECONDS = 10;
-const DEFAULT_PAGE_SIZE = 10;
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Separator } from "@/components/ui/separator";
+import { useStockData, CURRENCY } from "@/hooks/useStockData";
 
 export default function StockPage(): JSX.Element {
-  // ---------- core state ----------
-  const [stocks, setStocks] = useState<Stock[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [brands, setBrands] = useState<Brand[]>([]);
-  const [packagings, setPackagings] = useState<Packaging[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    // core data
+    stocks,
+    products,
+    categories,
+    brands,
+    packagings,
+    loading,
+    error,
+    search,
+    setSearch,
+    filterType,
+    setFilterType,
+    isFilterPinned,
+    setIsFilterPinned,
+    currentPage,
+    setCurrentPage,
+    pageSize,
+    setPageSize,
+    filteredStocks,
+    totalPages,
+    paginatedStocks,
+    stats,
+    // dialogs state
+    formDialogOpen,
+    setFormDialogOpen,
+    form,
+    editingId,
+    restockDialogOpen,
+    setRestockDialogOpen,
+    restockStock,
+    restockBoxes,
+    setRestockBoxes,
+    restockSingles,
+    setRestockSingles,
+    restockNotes,
+    setRestockNotes,
+    restockPriceOption,
+    setRestockPriceOption,
+    restockExistingPriceId,
+    setRestockExistingPriceId,
+    restockNewBuyPrice,
+    setRestockNewBuyPrice,
+    restockNewSellPriceBox,
+    setRestockNewSellPriceBox,
+    restockNewSellPriceUnit,
+    setRestockNewSellPriceUnit,
+    restockIsFree,
+    setRestockIsFree,
+    availablePrices,
+    loadingPrices,
+    adjustDialogOpen,
+    setAdjustDialogOpen,
+    adjustStock,
+    adjustMode,
+    setAdjustMode,
+    adjustBoxes,
+    setAdjustBoxes,
+    adjustSingles,
+    setAdjustSingles,
+    adjustExactBoxes,
+    setAdjustExactBoxes,
+    adjustExactSingles,
+    setAdjustExactSingles,
+    exchangeDialogOpen,
+    setExchangeDialogOpen,
+    exchangeForm,
+    setExchangeForm,
+    exchangeLoading,
+    entityDialogOpen,
+    setEntityDialogOpen,
+    activeEntityTab,
+    setActiveEntityTab,
+    entitySearch,
+    setEntitySearch,
+    priceListFilters,
+    setPriceListFilters,
+    priceListData,
+    priceListLoading,
+    activatingPriceId,
+    productForm,
+    setProductForm,
+    editingProductId,
+    priceHistoryDialogOpen,
+    setPriceHistoryDialogOpen,
+    selectedProductForHistory,
+    stockHistoryDialogOpen,
+    setStockHistoryDialogOpen,
+    selectedStockForHistory,
+    stockHistoryRecords,
+    historyLoading,
+    entityForm,
+    setEntityForm,
+    editingEntityId,
+    expandedRows,
+    deleteAlertOpen,
+    setDeleteAlertOpen,
+    deleteStock,
+    priceLayers,
+    filteredProducts,
+    filteredCategories,
+    filteredBrands,
+    filteredPackagings,
+    // actions
+    getCategoryName,
+    getBrandName,
+    getPackagingName,
+    calculateStockProfit,
+    handleStockQuantityChange,
+    handleStockContainerTypeChange,
+    handleStockProductSelect,
+    handleStockSubmit,
+    confirmDelete,
+    performDelete,
+    openRestockDialog,
+    getProfitImpact,
+    handleRestock,
+    openAdjustDialog,
+    handleAdjustSubmit,
+    handleExchange,
+    openProductForm,
+    handleProductSubmit,
+    handleProductDelete,
+    openPriceHistory,
+    handleEntitySubmit,
+    handleEditEntity,
+    handleDeleteEntity,
+    toggleRowExpanded,
+    productHasStock,
+    openStockHistory,
+    handleActivatePrice,
+    resetProductForm,
+    openStockForm,
+    setEditingProductId,
+    setEditingEntityId,
+  } = useStockData();
 
-  // ---------- search / filter ----------
-  const [search, setSearch] = useState("");
-  const [filterType, setFilterType] = useState<FilterType>("all");
-  const [isFilterPinned, setIsFilterPinned] = useState(false);
-  const [isClient, setIsClient] = useState(false);
-
-  // ---------- pagination ----------
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
-
-  // ---------- dialogs & forms ----------
-  const [formDialogOpen, setFormDialogOpen] = useState(false);
-  const [form, setForm] = useState({
-    productId: "",
-    boxQuantity: "",
-    singleQuantity: "",
-    containerType: ContainerType.BOX as ContainerType,
-  });
-  const [editingId, setEditingId] = useState<string | null>(null);
-
-  const [restockDialogOpen, setRestockDialogOpen] = useState(false);
-  const [restockStock, setRestockStock] = useState<Stock | null>(null);
-  const [restockBoxes, setRestockBoxes] = useState(0);
-  const [restockSingles, setRestockSingles] = useState(0);
-  const [restockNotes, setRestockNotes] = useState("");
-  const [restockNewBuyPrice, setRestockNewBuyPrice] = useState("");
-  const [restockIsFree, setRestockIsFree] = useState(false);
-
-  const [adjustDialogOpen, setAdjustDialogOpen] = useState(false);
-  const [adjustStock, setAdjustStock] = useState<Stock | null>(null);
-  const [adjustMode, setAdjustMode] = useState<AdjustmentMode>("set");
-  const [adjustBoxes, setAdjustBoxes] = useState(0);
-  const [adjustSingles, setAdjustSingles] = useState(0);
-  const [adjustExactBoxes, setAdjustExactBoxes] = useState(0);
-  const [adjustExactSingles, setAdjustExactSingles] = useState(0);
-
-  const [exchangeDialogOpen, setExchangeDialogOpen] = useState(false);
-  const [exchangeForm, setExchangeForm] = useState<ExchangeForm>({
-    sourceProductId: "",
-    targetProductId: "",
-    exchangeType: "box",
-    sourceQuantity: 1,
-    notes: "",
-  });
-  const [exchangeLoading, setExchangeLoading] = useState(false);
-
-  const [entityDialogOpen, setEntityDialogOpen] = useState(false);
-  const [activeEntityTab, setActiveEntityTab] = useState<
-    "products" | "category" | "brand" | "packaging"
-  >("products");
-  const [entitySearch, setEntitySearch] = useState("");
-
-  const [productForm, setProductForm] = useState<ProductFormData>({
-    name: "",
-    description: "",
-    categoryId: "",
-    brandId: "",
-    packagingId: "",
-    unitsPerBox: DEFAULT_UNITS_PER_BOX,
-    buyPricePerBox: "",
-    sellPricePerBox: "",
-    sellPricePerUnit: "",
-    allowLoss: false,
-  });
-  const [editingProductId, setEditingProductId] = useState<string | null>(null);
-
-  const [priceHistoryDialogOpen, setPriceHistoryDialogOpen] = useState(false);
-  const [selectedProductForHistory, setSelectedProductForHistory] = useState<Product | null>(null);
-
-  const [stockHistoryDialogOpen, setStockHistoryDialogOpen] = useState(false);
-  const [selectedStockForHistory, setSelectedStockForHistory] = useState<Stock | null>(null);
-  const [stockHistoryRecords, setStockHistoryRecords] = useState<StockHistoryRecord[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-
-  const [entityForm, setEntityForm] = useState({ name: "", type: "" });
-  const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
-
-  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-
-  const [stats, setStats] = useState({
-    totalProducts: 0,
-    totalBoxes: 0,
-    totalSingles: 0,
-    lowStockItems: 0,
-    totalProfitPotential: 0,
-    totalInventoryValue: 0,
-  });
-
-  // ---------- delete with undo ----------
-  const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
-  const [deleteStock, setDeleteStock] = useState<Stock | null>(null);
-  const [deletedStockBackup, setDeletedStockBackup] = useState<Stock | null>(null);
-  const undoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // ==================== LOCALSTORAGE SYNC ====================
-  useEffect(() => {
-    setIsClient(true);
-    const pinned = localStorage.getItem(STORAGE_PINNED_FILTER_KEY);
-    if (pinned === "all" || pinned === "box" || pinned === "single") {
-      setFilterType(pinned as FilterType);
-      setIsFilterPinned(true);
-    } else {
-      const saved = localStorage.getItem(STORAGE_FILTER_KEY);
-      if (saved === "all" || saved === "box" || saved === "single") {
-        setFilterType(saved as FilterType);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isClient) return;
-    localStorage.setItem(STORAGE_FILTER_KEY, filterType);
-    if (isFilterPinned) {
-      localStorage.setItem(STORAGE_PINNED_FILTER_KEY, filterType);
-    } else {
-      localStorage.removeItem(STORAGE_PINNED_FILTER_KEY);
-    }
-  }, [filterType, isFilterPinned, isClient]);
-
-  // reset page on search/filter change
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [search, filterType]);
-
-  // ==================== FETCH ALL PRODUCTS (paginated) ====================
-  const fetchAllProducts = async (): Promise<Product[]> => {
-    try {
-      let allProducts: Product[] = [];
-      let currentPage = 1;
-      let hasMore = true;
-      while (hasMore) {
-        const response = await api.get<ProductsResponse>(
-          `/products?page=${currentPage}&limit=${PRODUCTS_PAGE_LIMIT}`
-        );
-        const { data, hasMore: more } = response.data;
-        const productsWithPrice = data.map((product) => {
-          const latestPrice = product.prices?.[0];
-          return {
-            ...product,
-            buyPricePerBox: latestPrice?.buyPricePerBox ?? 0,
-            sellPricePerBox: latestPrice?.sellPricePerBox ?? 0,
-            sellPricePerUnit: latestPrice?.sellPricePerUnit ?? 0,
-            allowLoss: latestPrice?.allowLoss ?? false,
-            currentPriceId: latestPrice?.id,
-          };
-        });
-        allProducts = [...allProducts, ...productsWithPrice];
-        hasMore = more;
-        currentPage++;
-      }
-      return allProducts;
-    } catch (error) {
-      console.error("Failed to fetch products:", error);
-      return [];
-    }
+  // Helper: format numbers with commas and two decimals
+  const formatNumber = (value: number | string | undefined): string => {
+    if (value === undefined || value === null) return "0";
+    const num = typeof value === "string" ? parseFloat(value) : value;
+    if (isNaN(num)) return "0";
+    return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
 
-  // ==================== FETCH ALL DATA ====================
-  const fetchAll = async (): Promise<void> => {
-    try {
-      setLoading(true);
-      setError(null);
-      const [stocksRes, productsData, catRes, brandRes, pkgRes] = await Promise.all([
-        api.get<Stock[]>("/stocks"),
-        fetchAllProducts(),
-        api.get("/categories"),
-        api.get("/brands"),
-        api.get("/packagings"),
-      ]);
-
-      // backend may return { data, meta } or array
-      const catsArray = catRes.data?.data ?? catRes.data;
-      const brandsArray = brandRes.data?.data ?? brandRes.data;
-      const pkgsArray = pkgRes.data?.data ?? pkgRes.data;
-
-      const stocksWithProducts = stocksRes.data.map((stock) => ({
-        ...stock,
-        product: productsData.find((prod) => prod.id === stock.productId),
-      }));
-
-      setStocks(stocksWithProducts);
-      setProducts(productsData);
-      setCategories(Array.isArray(catsArray) ? catsArray : []);
-      setBrands(Array.isArray(brandsArray) ? brandsArray : []);
-      setPackagings(Array.isArray(pkgsArray) ? pkgsArray : []);
-
-      // compute stats
-      const totalBoxes = stocksWithProducts.reduce((sum, s) => sum + s.boxQuantity, 0);
-      const totalSingles = stocksWithProducts.reduce((sum, s) => sum + s.singleQuantity, 0);
-      const lowStockItems = stocksWithProducts.filter(
-        (s) => s.boxQuantity === 0 && s.singleQuantity === 0
-      ).length;
-      let totalProfit = 0;
-      let totalValue = 0;
-      stocksWithProducts.forEach((stock) => {
-        const p = stock.product;
-        if (p && p.buyPricePerBox) {
-          const totalUnits = stock.boxQuantity * p.unitsPerBox + stock.singleQuantity;
-          const costPerUnit = p.buyPricePerBox / p.unitsPerBox;
-          totalValue += totalUnits * costPerUnit;
-          if (p.sellPricePerUnit) {
-            const profitPerUnit = p.sellPricePerUnit - costPerUnit;
-            totalProfit += totalUnits * profitPerUnit;
-          }
-        }
-      });
-      setStats({
-        totalProducts: productsData.length,
-        totalBoxes,
-        totalSingles,
-        lowStockItems,
-        totalProfitPotential: totalProfit,
-        totalInventoryValue: totalValue,
-      });
-    } catch (e) {
-      const message = (e as any)?.response?.data?.message || "Failed to load data";
-      setError(message);
-      toast.error(message);
-    } finally {
-      setLoading(false);
-    }
+  // Format integer (no decimals)
+  const formatInteger = (value: number | string | undefined): string => {
+    if (value === undefined || value === null) return "0";
+    const num = typeof value === "string" ? parseFloat(value) : value;
+    if (isNaN(num)) return "0";
+    return num.toLocaleString(undefined, { maximumFractionDigits: 0 });
   };
 
-  useEffect(() => {
-    fetchAll();
-  }, []);
-
-  // ==================== FILTERED & PAGINATED STOCKS ====================
-  const filteredStocks = useMemo(() => {
-    let filtered = stocks;
-    filtered = filtered.filter((s) =>
-      s.product?.name.toLowerCase().includes(search.toLowerCase())
-    );
-    if (filterType === "box") {
-      filtered = filtered.filter((s) => s.containerType === ContainerType.BOX);
-    } else if (filterType === "single") {
-      filtered = filtered.filter((s) => s.containerType === ContainerType.SINGLE);
-    }
-    return filtered;
-  }, [stocks, search, filterType]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredStocks.length / pageSize));
-  const paginatedStocks = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filteredStocks.slice(start, start + pageSize);
-  }, [filteredStocks, currentPage, pageSize]);
-
-  // ==================== HELPERS ====================
-  const getCategoryName = (id: string): string =>
-    categories.find((c) => c.id === id)?.name ?? "—";
-  const getBrandName = (id: string): string =>
-    brands.find((b) => b.id === id)?.name ?? "—";
-  const getPackagingName = (id: string): string =>
-    packagings.find((p) => p.id === id)?.name ?? "—";
-
-  const calculateStockProfit = (stock: Stock) => {
-    const product = stock.product;
-    if (
-      !product ||
-      !product.buyPricePerBox ||
-      !product.sellPricePerBox ||
-      !product.sellPricePerUnit
-    ) {
-      return {
-        boxProfit: 0,
-        singleProfit: 0,
-        costPerUnit: 0,
-        unitProfit: 0,
-        totalCost: 0,
-        totalRevenue: 0,
-        totalProfit: 0,
-      };
-    }
-    const costPerUnit = product.buyPricePerBox / product.unitsPerBox;
-    const unitProfit = product.sellPricePerUnit - costPerUnit;
-    const boxProfitPerBox = product.sellPricePerBox - product.buyPricePerBox;
-    const totalUnits = stock.boxQuantity * product.unitsPerBox + stock.singleQuantity;
-    const totalCost =
-      stock.boxQuantity * product.buyPricePerBox + stock.singleQuantity * costPerUnit;
-    const totalRevenue =
-      stock.boxQuantity * product.sellPricePerBox +
-      stock.singleQuantity * product.sellPricePerUnit;
-    const totalProfit = totalRevenue - totalCost;
-    const boxProfit = stock.boxQuantity * boxProfitPerBox;
-    const singleProfit = stock.singleQuantity * unitProfit;
-    return {
-      boxProfit,
-      singleProfit,
-      costPerUnit,
-      unitProfit,
-      totalCost,
-      totalRevenue,
-      totalProfit,
-    };
+  // Animation variants
+  const fadeInUp: Variants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.4 } },
   };
 
-  // ==================== STOCK HISTORY ====================
-  const fetchStockHistory = async (productId: string) => {
-    try {
-      setHistoryLoading(true);
-      const response = await api.get<StockHistoryRecord[]>(`/stocks/history/${productId}`);
-      setStockHistoryRecords(response.data);
-    } catch (e) {
-      toast.error("Failed to load stock history");
-    } finally {
-      setHistoryLoading(false);
-    }
+  const staggerContainer: Variants = {
+    hidden: { opacity: 0 },
+    visible: {
+      opacity: 1,
+      transition: { staggerChildren: 0.05 },
+    },
   };
 
-  const openStockHistory = (stock: Stock) => {
-    setSelectedStockForHistory(stock);
-    fetchStockHistory(stock.productId);
-    setStockHistoryDialogOpen(true);
+  const cardHover = {
+    scale: 1.02,
+    transition: { type: "spring", stiffness: 300 },
   };
 
-  // ==================== STOCK CRUD ====================
-  const resetStockForm = () => {
-    setForm({
-      productId: "",
-      boxQuantity: "",
-      singleQuantity: "",
-      containerType: ContainerType.BOX,
-    });
-    setEditingId(null);
-  };
+  const statsCards = [
+    {
+      title: "Total Products",
+      value: formatInteger(stats.totalProducts),
+      icon: Package,
+      gradient: "from-emerald-500 to-teal-500",
+      border: "border-l-emerald-500",
+    },
+    {
+      title: "Total Boxes",
+      value: formatInteger(stats.totalBoxes),
+      icon: Box,
+      gradient: "from-blue-500 to-cyan-500",
+      border: "border-l-blue-500",
+    },
+    {
+      title: "Total Singles",
+      value: formatInteger(stats.totalSingles),
+      icon: Layers,
+      gradient: "from-purple-500 to-violet-500",
+      border: "border-l-purple-500",
+    },
+    {
+      title: "Out of Stock",
+      value: formatInteger(stats.lowStockItems),
+      icon: stats.lowStockItems > 0 ? TrendingDown : CheckCircle2,
+      gradient:
+        stats.lowStockItems > 0
+          ? "from-amber-500 to-orange-500"
+          : "from-emerald-500 to-teal-500",
+      border:
+        stats.lowStockItems > 0 ? "border-l-amber-500" : "border-l-emerald-500",
+    },
+    {
+      title: "Profit Potential",
+      value: formatNumber(stats.totalProfitPotential),
+      icon: DollarSign,
+      gradient: "from-rose-500 to-pink-500",
+      border: "border-l-rose-500",
+      suffix: CURRENCY,
+    },
+    {
+      title: "Inventory Value",
+      value: formatNumber(stats.totalInventoryValue),
+      icon: Archive,
+      gradient: "from-indigo-500 to-blue-500",
+      border: "border-l-indigo-500",
+      suffix: CURRENCY,
+    },
+  ];
 
-  const openStockForm = (stock?: Stock) => {
-    if (stock) {
-      setForm({
-        productId: stock.productId,
-        boxQuantity: String(stock.boxQuantity),
-        singleQuantity: String(stock.singleQuantity),
-        containerType: stock.containerType,
-      });
-      setEditingId(stock.id);
-    } else {
-      resetStockForm();
-    }
-    setFormDialogOpen(true);
-  };
-
-  const handleStockQuantityChange = (
-    field: "boxQuantity" | "singleQuantity",
-    value: string
-  ) => {
-    const num = Number(value) || 0;
-    const product = products.find((p) => p.id === form.productId);
-    const unitsPerBox = product?.unitsPerBox || 1;
-    if (field === "boxQuantity") {
-      setForm((prev) => ({
-        ...prev,
-        boxQuantity: value,
-        singleQuantity:
-          prev.containerType === ContainerType.BOX
-            ? String(num * unitsPerBox)
-            : prev.singleQuantity,
-      }));
-    } else {
-      setForm((prev) => ({
-        ...prev,
-        singleQuantity: value,
-        boxQuantity:
-          prev.containerType === ContainerType.SINGLE
-            ? String(Math.floor(num / unitsPerBox))
-            : prev.boxQuantity,
-      }));
-    }
-  };
-
-  const handleStockContainerTypeChange = (type: ContainerType) => {
-    const product = products.find((p) => p.id === form.productId);
-    const unitsPerBox = product?.unitsPerBox || 1;
-    const boxNum = Number(form.boxQuantity) || 0;
-    const singleNum = Number(form.singleQuantity) || 0;
-    if (type === ContainerType.BOX) {
-      setForm((prev) => ({
-        ...prev,
-        containerType: type,
-        singleQuantity: String(boxNum * unitsPerBox),
-      }));
-    } else {
-      setForm((prev) => ({
-        ...prev,
-        containerType: type,
-        boxQuantity: String(Math.floor(singleNum / unitsPerBox)),
-      }));
-    }
-  };
-
-  const handleStockProductSelect = (productId: string) => {
-    const product = products.find((p) => p.id === productId);
-    if (!product) return;
-    setForm((prev) => ({ ...prev, productId, boxQuantity: "0", singleQuantity: "0" }));
-  };
-
-  const handleStockSubmit = async () => {
-    if (!form.productId) {
-      toast.error("Please select a product");
-      return;
-    }
-
-    let payload: any = {
-      productId: form.productId,
-      containerType: form.containerType,
-    };
-
-    if (form.containerType === ContainerType.BOX) {
-      payload.boxQuantity = Number(form.boxQuantity) || 0;
-      payload.singleQuantity = 0;
-    } else {
-      payload.singleQuantity = Number(form.singleQuantity) || 0;
-      payload.boxQuantity = 0;
-    }
-
-    try {
-      setLoading(true);
-      if (editingId) {
-        await api.put(`/stocks/${editingId}`, payload);
-        toast.success("Stock updated");
-      } else {
-        await api.post("/stocks", payload);
-        toast.success("Stock created");
-      }
-      setFormDialogOpen(false);
-      resetStockForm();
-      await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Failed to save stock");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ==================== DELETE WITH UNDO ====================
-  const confirmDelete = (stock: Stock) => {
-    setDeleteStock(stock);
-    setDeleteAlertOpen(true);
-  };
-
-  const performDelete = async () => {
-    if (!deleteStock) return;
-
-    const backup = { ...deleteStock };
-    setDeletedStockBackup(backup);
-
-    setStocks((prev) => prev.filter((s) => s.id !== deleteStock.id));
-
-    setStats(prev => ({
-      ...prev,
-      totalBoxes: prev.totalBoxes - deleteStock.boxQuantity,
-      totalSingles: prev.totalSingles - deleteStock.singleQuantity,
-      lowStockItems: prev.lowStockItems - ((deleteStock.boxQuantity === 0 && deleteStock.singleQuantity === 0) ? 1 : 0),
-    }));
-
-    setDeleteAlertOpen(false);
-    setDeleteStock(null);
-
-    toast("Stock entry deleted", {
-      description: `You have ${UNDO_SECONDS} seconds to undo this action.`,
-      duration: UNDO_SECONDS * 1000,
-      position: "bottom-left",
-      action: {
-        label: "Undo",
-        onClick: async () => {
-          if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
-          if (deletedStockBackup) {
-            try {
-              await api.post("/stocks", {
-                productId: deletedStockBackup.productId,
-                boxQuantity: deletedStockBackup.boxQuantity,
-                singleQuantity: deletedStockBackup.singleQuantity,
-                containerType: deletedStockBackup.containerType,
-              });
-              toast.success("Stock restored");
-              await fetchAll();
-            } catch (e) {
-              toast.error("Failed to restore stock");
-            }
-            setDeletedStockBackup(null);
-          }
-        },
-      },
-    });
-
-    undoTimeoutRef.current = setTimeout(async () => {
-      try {
-        await api.delete(`/stocks/${deleteStock.id}`);
-      } catch (e) {
-        // ignore
-      } finally {
-        if (undoTimeoutRef.current) undoTimeoutRef.current = null;
-      }
-    }, UNDO_SECONDS * 1000);
-  };
-
-  // ==================== RESTOCK ====================
-  const openRestockDialog = (stock: Stock) => {
-    setRestockStock(stock);
-    setRestockBoxes(0);
-    setRestockSingles(0);
-    setRestockNotes("");
-    setRestockNewBuyPrice("");
-    setRestockIsFree(false);
-    setRestockDialogOpen(true);
-  };
-
-  const handleRestock = async () => {
-    if (!restockStock) return;
-    if (restockBoxes === 0 && restockSingles === 0) {
-      toast.error("Please add at least one box or single");
-      return;
-    }
-    try {
-      setLoading(true);
-      const payload: any = {
-        addBoxes: restockBoxes,
-        addSingles: restockSingles,
-        notes: restockNotes || "Manual restock",
-        isFree: restockIsFree,
-      };
-      if (restockNewBuyPrice && Number(restockNewBuyPrice) > 0) {
-        payload.newBuyPricePerBox = Number(restockNewBuyPrice);
-      }
-      await api.post(`/stocks/${restockStock.id}/restock`, payload);
-      toast.success(`Restocked ${restockBoxes} boxes and ${restockSingles} singles`);
-      setRestockDialogOpen(false);
-      await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Restock failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ==================== ADJUSTMENT ====================
-  const openAdjustDialog = (stock: Stock) => {
-    setAdjustStock(stock);
-    setAdjustMode("set");
-    setAdjustBoxes(0);
-    setAdjustSingles(0);
-    setAdjustExactBoxes(stock.boxQuantity);
-    setAdjustExactSingles(stock.singleQuantity);
-    setAdjustDialogOpen(true);
-  };
-
-  const handleAdjustSubmit = async () => {
-    if (!adjustStock) return;
-    let newBoxes = adjustStock.boxQuantity;
-    let newSingles = adjustStock.singleQuantity;
-    if (adjustMode === "add") {
-      newBoxes += adjustBoxes;
-      newSingles += adjustSingles;
-    } else if (adjustMode === "subtract") {
-      newBoxes -= adjustBoxes;
-      newSingles -= adjustSingles;
-      if (newBoxes < 0) newBoxes = 0;
-      if (newSingles < 0) newSingles = 0;
-    } else {
-      newBoxes = adjustExactBoxes;
-      newSingles = adjustExactSingles;
-    }
-    const product = products.find((p) => p.id === adjustStock.productId);
-    const unitsPerBox = product?.unitsPerBox || 1;
-    const extraBoxes = Math.floor(newSingles / unitsPerBox);
-    newBoxes += extraBoxes;
-    newSingles = newSingles % unitsPerBox;
-
-    try {
-      setLoading(true);
-      await api.put(`/stocks/${adjustStock.id}`, {
-        boxQuantity: newBoxes,
-        singleQuantity: newSingles,
-      });
-      toast.success("Stock adjusted successfully");
-      setAdjustDialogOpen(false);
-      await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Adjustment failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ==================== EXCHANGE ====================
-  const handleExchange = async () => {
-    if (!exchangeForm.sourceProductId || !exchangeForm.targetProductId) {
-      toast.error("Please select both products");
-      return;
-    }
-    if (exchangeForm.sourceProductId === exchangeForm.targetProductId) {
-      toast.error("Cannot exchange a product with itself");
-      return;
-    }
-    if (exchangeForm.sourceQuantity <= 0) {
-      toast.error("Quantity must be greater than 0");
-      return;
-    }
-    try {
-      setExchangeLoading(true);
-      const response = await api.post("/stocks/exchange", {
-        sourceProductId: exchangeForm.sourceProductId,
-        targetProductId: exchangeForm.targetProductId,
-        exchangeType: exchangeForm.exchangeType,
-        sourceQuantity: exchangeForm.sourceQuantity,
-        notes: exchangeForm.notes,
-      });
-      toast.success(response.data.message);
-      setExchangeDialogOpen(false);
-      setExchangeForm({
-        sourceProductId: "",
-        targetProductId: "",
-        exchangeType: "box",
-        sourceQuantity: 1,
-        notes: "",
-      });
-      await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Exchange failed");
-    } finally {
-      setExchangeLoading(false);
-    }
-  };
-
-  // ==================== PRODUCT CRUD ====================
-  const resetProductForm = () => {
-    setProductForm({
-      name: "",
-      description: "",
-      categoryId: "",
-      brandId: "",
-      packagingId: "",
-      unitsPerBox: DEFAULT_UNITS_PER_BOX,
-      buyPricePerBox: "",
-      sellPricePerBox: "",
-      sellPricePerUnit: "",
-      allowLoss: false,
-    });
-    setEditingProductId(null);
-  };
-
-  const openProductForm = (product?: Product) => {
-    if (product) {
-      setProductForm({
-        name: product.name,
-        description: product.description || "",
-        categoryId: product.categoryId,
-        brandId: product.brandId,
-        packagingId: product.packagingId,
-        unitsPerBox: product.unitsPerBox,
-        buyPricePerBox: String(product.buyPricePerBox || 0),
-        sellPricePerBox: String(product.sellPricePerBox || 0),
-        sellPricePerUnit: String(product.sellPricePerUnit || 0),
-        allowLoss: product.allowLoss || false,
-      });
-      setEditingProductId(product.id);
-    } else {
-      resetProductForm();
-    }
-  };
-
-  const handleProductSubmit = async () => {
-    if (
-      !productForm.name ||
-      !productForm.categoryId ||
-      !productForm.brandId ||
-      !productForm.packagingId
-    ) {
-      toast.error("Please fill all required fields");
-      return;
-    }
-    const basicPayload = {
-      name: productForm.name,
-      description: productForm.description || undefined,
-      categoryId: productForm.categoryId,
-      brandId: productForm.brandId,
-      packagingId: productForm.packagingId,
-      unitsPerBox: Number(productForm.unitsPerBox) || DEFAULT_UNITS_PER_BOX,
-    };
-    const pricePayload = {
-      buyPricePerBox: Number(productForm.buyPricePerBox) || 0,
-      sellPricePerBox: Number(productForm.sellPricePerBox) || 0,
-      sellPricePerUnit: Number(productForm.sellPricePerUnit) || 0,
-      allowLoss: productForm.allowLoss,
-    };
-    try {
-      setLoading(true);
-      if (editingProductId) {
-        await api.put(`/products/${editingProductId}`, basicPayload);
-        const currentProduct = products.find((p) => p.id === editingProductId);
-        if (
-          currentProduct &&
-          (currentProduct.buyPricePerBox !== pricePayload.buyPricePerBox ||
-            currentProduct.sellPricePerBox !== pricePayload.sellPricePerBox ||
-            currentProduct.sellPricePerUnit !== pricePayload.sellPricePerUnit ||
-            currentProduct.allowLoss !== pricePayload.allowLoss)
-        ) {
-          await api.post(`/products/${editingProductId}/prices`, pricePayload);
-        }
-        toast.success("Product updated");
-      } else {
-        await api.post("/products", { ...basicPayload, ...pricePayload });
-        toast.success("Product created");
-      }
-      resetProductForm();
-      await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Failed to save product");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleProductDelete = async (id: string) => {
-    if (!confirm("Delete this product? This will also delete its stock record.")) return;
-    try {
-      await api.delete(`/products/${id}`);
-      toast.success("Product deleted");
-      await fetchAll();
-    } catch (e: any) {
-      toast.error(e?.response?.data?.message || "Failed to delete product");
-    }
-  };
-
-  const openPriceHistory = (product: Product) => {
-    setSelectedProductForHistory(product);
-    setPriceHistoryDialogOpen(true);
-  };
-
-  // ==================== ENTITY CRUD ====================
-  const getEntityEndpoint = (): string => {
-    switch (activeEntityTab) {
-      case "category":
-        return "/categories";
-      case "brand":
-        return "/brands";
-      case "packaging":
-        return "/packagings";
-      default:
-        return "";
-    }
-  };
-
-  const handleEntitySubmit = async () => {
-    const endpoint = getEntityEndpoint();
-    if (!endpoint) return;
-    const payload =
-      activeEntityTab === "packaging"
-        ? { type: entityForm.type }
-        : { name: entityForm.name };
-    if (
-      (activeEntityTab !== "packaging" && !entityForm.name) ||
-      (activeEntityTab === "packaging" && !entityForm.type)
-    ) {
-      toast.error("Name / type is required");
-      return;
-    }
-    try {
-      setLoading(true);
-      if (editingEntityId) {
-        await api.put(`${endpoint}/${editingEntityId}`, payload);
-        toast.success(`${activeEntityTab} updated`);
-      } else {
-        await api.post(endpoint, payload);
-        toast.success(`${activeEntityTab} created`);
-      }
-      setEntityForm({ name: "", type: "" });
-      setEditingEntityId(null);
-      await fetchAll();
-    } catch (e) {
-      toast.error(`Failed to save ${activeEntityTab}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleEditEntity = (item: Category | Brand | Packaging) => {
-    setEditingEntityId(item.id);
-    if (activeEntityTab === "packaging") {
-      setEntityForm({ name: "", type: (item as Packaging).name });
-    } else {
-      setEntityForm({ name: (item as Category | Brand).name, type: "" });
-    }
-  };
-
-  const handleDeleteEntity = async (id: string) => {
-    if (!confirm(`Delete this ${activeEntityTab}?`)) return;
-    try {
-      await api.delete(`${getEntityEndpoint()}/${id}`);
-      toast.success(`${activeEntityTab} deleted`);
-      await fetchAll();
-    } catch (e) {
-      toast.error(`Failed to delete ${activeEntityTab}`);
-    }
-  };
-
-  // ---------- Filtered entities ----------
-  const filteredProducts = useMemo(() => {
-    const lower = entitySearch.toLowerCase();
-    return products.filter((p) => p.name.toLowerCase().includes(lower));
-  }, [products, entitySearch]);
-
-  const filteredCategories = useMemo(() => {
-    const lower = entitySearch.toLowerCase();
-    return categories.filter((c) => c.name.toLowerCase().includes(lower));
-  }, [categories, entitySearch]);
-
-  const filteredBrands = useMemo(() => {
-    const lower = entitySearch.toLowerCase();
-    return brands.filter((b) => b.name.toLowerCase().includes(lower));
-  }, [brands, entitySearch]);
-
-  const filteredPackagings = useMemo(() => {
-    const lower = entitySearch.toLowerCase();
-    return packagings.filter((p) => p.name.toLowerCase().includes(lower));
-  }, [packagings, entitySearch]);
-
-  const toggleRowExpanded = (id: string) => {
-    setExpandedRows((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const productHasStock = (productId: string) =>
-    stocks.some((s) => s.productId === productId);
-
-  // ==================== RENDER ====================
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-4 md:p-6 lg:p-8 space-y-6">
+      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6 md:p-8 lg:p-10 space-y-8">
         {/* Header */}
         <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
+          initial="hidden"
+          animate="visible"
+          variants={fadeInUp}
+          className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
         >
           <div>
-            <h1 className="text-3xl md:text-4xl font-bold tracking-tight bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 dark:from-indigo-400 dark:via-purple-400 dark:to-pink-400 bg-clip-text text-transparent">
+            <h1 className="text-4xl md:text-5xl font-bold tracking-tight bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
               Stock Management
             </h1>
-            <p className="text-sm text-muted-foreground mt-1 flex items-center gap-1">
-              <Sparkles className="h-3 w-3 text-amber-500" />
-              Track inventory, exchanges, restocks, and profitability
+            <p className="text-sm text-slate-400 mt-1 flex items-center gap-1">
+              <Sparkles className="h-4 w-4 text-amber-400 animate-pulse" />
+              Real‑time inventory intelligence & profit analytics
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-3">
             <Button
               variant="outline"
-              size="sm"
+              size="default"
               onClick={() => setEntityDialogOpen(true)}
-              className="shadow-sm border-indigo-200 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-950"
+              className="border-slate-700 bg-slate-800/50 backdrop-blur-md hover:bg-slate-700/50 text-slate-200 shadow-lg transition-all duration-300"
             >
               <Settings className="mr-2 h-4 w-4" /> Manage
             </Button>
             <Button
               variant="outline"
-              size="sm"
+              size="default"
               onClick={() => setExchangeDialogOpen(true)}
-              className="shadow-sm border-amber-200 dark:border-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950"
+              className="border-amber-700/50 bg-amber-900/20 backdrop-blur-md hover:bg-amber-800/30 text-amber-300 shadow-lg"
             >
               <ArrowLeftRight className="mr-2 h-4 w-4" /> Exchange
             </Button>
             <Button
               onClick={() => openStockForm()}
-              className="shadow-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white border-0"
+              className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white shadow-xl shadow-indigo-500/20 transition-all duration-300"
             >
               <Plus className="mr-2 h-4 w-4" /> Add Stock
             </Button>
           </div>
         </motion.div>
 
-        {/* Stats Cards */}
-        {loading && !stocks.length ? (
-          <div className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
-            {[...Array(6)].map((_, i) => (
-              <Skeleton key={i} className="h-28 rounded-xl" />
-            ))}
-          </div>
-        ) : (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.1 }}
-            className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-6"
-          >
-            <Card className="border-l-4 border-l-emerald-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-medium text-muted-foreground">
-                  Total Products
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-between">
-                  <p className="text-2xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
-                    {stats.totalProducts}
-                  </p>
-                  <Package className="h-6 w-6 text-emerald-500 opacity-80" />
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-l-4 border-l-blue-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-medium text-muted-foreground">
-                  Total Boxes
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-between">
-                  <p className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
-                    {stats.totalBoxes}
-                  </p>
-                  <Box className="h-6 w-6 text-blue-500 opacity-80" />
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-l-4 border-l-purple-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-medium text-muted-foreground">
-                  Total Singles
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-between">
-                  <p className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-violet-600 bg-clip-text text-transparent">
-                    {stats.totalSingles}
-                  </p>
-                  <Layers className="h-6 w-6 text-purple-500 opacity-80" />
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-l-4 border-l-amber-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-medium text-muted-foreground">
-                  Out of Stock
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-between">
-                  <p className="text-2xl font-bold bg-gradient-to-r from-amber-600 to-orange-600 bg-clip-text text-transparent">
-                    {stats.lowStockItems}
-                  </p>
-                  {stats.lowStockItems > 0 ? (
-                    <TrendingDown className="h-6 w-6 text-amber-500 opacity-80" />
-                  ) : (
-                    <CheckCircle2 className="h-6 w-6 text-emerald-500 opacity-80" />
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-l-4 border-l-rose-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-medium text-muted-foreground">
-                  Profit Potential
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-between">
-                  <p className="text-lg font-bold bg-gradient-to-r from-rose-600 to-pink-600 bg-clip-text text-transparent">
-                    {stats.totalProfitPotential.toFixed(0)} {CURRENCY}
-                  </p>
-                  <DollarSign className="h-6 w-6 text-rose-500 opacity-80" />
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-l-4 border-l-indigo-500 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-medium text-muted-foreground">
-                  Inventory Value
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-between">
-                  <p className="text-lg font-bold bg-gradient-to-r from-indigo-600 to-blue-600 bg-clip-text text-transparent">
-                    {stats.totalInventoryValue.toFixed(0)} {CURRENCY}
-                  </p>
-                  <Archive className="h-6 w-6 text-indigo-500 opacity-80" />
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-        )}
+        {/* KPI Stats Matrix with staggered animation */}
+        <motion.div
+          variants={staggerContainer}
+          initial="hidden"
+          animate="visible"
+          transition={{ delay: 0.1 }}
+          className="grid gap-5 grid-cols-2 md:grid-cols-3 lg:grid-cols-6"
+        >
+          {loading && !stocks.length
+            ? [...Array(6)].map((_, i) => (
+                <Skeleton key={i} className="h-32 rounded-2xl bg-slate-800/50" />
+              ))
+            : statsCards.map((card, idx) => (
+                <motion.div
+                  key={idx}
+                  variants={fadeInUp}
+                  whileHover={cardHover}
+                  className="relative"
+                >
+                  <Card
+                    className={cn(
+                      "relative overflow-hidden backdrop-blur-md bg-slate-900/40 border-slate-800 shadow-xl transition-all duration-300 group",
+                      card.border,
+                      "border-l-4"
+                    )}
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                        {card.title}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex items-center justify-between">
+                        <p
+                          className={cn(
+                            "text-2xl font-bold bg-gradient-to-r bg-clip-text text-transparent",
+                            card.gradient
+                          )}
+                        >
+                          {card.value}
+                          {card.suffix && ` ${card.suffix}`}
+                        </p>
+                        <card.icon className="h-6 w-6 text-slate-500 group-hover:text-slate-300 transition-colors" />
+                      </div>
+                    </CardContent>
+                  </Card>
+                </motion.div>
+              ))}
+        </motion.div>
 
-        {/* Filters and search */}
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-2">
-            <div className="flex rounded-lg border bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm p-1 shadow-sm">
-              <Button
-                variant={filterType === "all" ? "default" : "ghost"}
-                size="sm"
-                onClick={() => setFilterType("all")}
-                className={cn(
-                  filterType === "all" &&
-                    "bg-gradient-to-r from-indigo-500 to-purple-500 text-white"
-                )}
-              >
-                All
-              </Button>
-              <Button
-                variant={filterType === "box" ? "default" : "ghost"}
-                size="sm"
-                onClick={() => setFilterType("box")}
-                className={cn(
-                  filterType === "box" &&
-                    "bg-gradient-to-r from-blue-500 to-cyan-500 text-white"
-                )}
-              >
-                Box
-              </Button>
-              <Button
-                variant={filterType === "single" ? "default" : "ghost"}
-                size="sm"
-                onClick={() => setFilterType("single")}
-                className={cn(
-                  filterType === "single" &&
-                    "bg-gradient-to-r from-emerald-500 to-teal-500 text-white"
-                )}
-              >
-                Single
-              </Button>
+        {/* Dynamic Command & Quick-Filter Strip */}
+        <motion.div
+          initial="hidden"
+          animate="visible"
+          variants={fadeInUp}
+          transition={{ delay: 0.2 }}
+          className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex rounded-xl border border-slate-800 bg-slate-900/50 backdrop-blur-md p-1 shadow-inner">
+              {(["all", "box", "single"] as const).map((type) => (
+                <Button
+                  key={type}
+                  variant={filterType === type ? "default" : "ghost"}
+                  size="sm"
+                  onClick={() => setFilterType(type)}
+                  className={cn(
+                    "capitalize rounded-lg px-4 transition-all duration-200",
+                    filterType === type &&
+                      "bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-md"
+                  )}
+                >
+                  {type}
+                </Button>
+              ))}
             </div>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8"
+                  className="h-9 w-9 rounded-full bg-slate-800/50 backdrop-blur-md hover:bg-slate-700/70 transition-all"
                   onClick={() => setIsFilterPinned(!isFilterPinned)}
                 >
                   {isFilterPinned ? (
-                    <Pin className="h-4 w-4 text-indigo-500" />
+                    <Pin className="h-4 w-4 text-indigo-400" />
                   ) : (
-                    <PinOff className="h-4 w-4 text-muted-foreground" />
+                    <PinOff className="h-4 w-4 text-slate-400" />
                   )}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>
-                {isFilterPinned
-                  ? "Unpin default filter"
-                  : "Pin current filter as default"}
+              <TooltipContent side="bottom">
+                {isFilterPinned ? "Unpin default filter" : "Pin current filter"}
               </TooltipContent>
             </Tooltip>
             <Badge
               variant="secondary"
-              className="h-8 px-3 bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700"
+              className="h-8 px-4 bg-slate-800/70 text-slate-300 rounded-full backdrop-blur-sm border border-slate-700"
             >
-              {filteredStocks.length} items
+              {formatInteger(filteredStocks.length)} items
             </Badge>
           </div>
-          <div className="relative w-full sm:w-64">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <div className="relative w-full sm:w-80">
+            <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <Input
               placeholder="Search products..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 bg-white/70 dark:bg-slate-900/70 backdrop-blur-sm border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-indigo-500/20"
+              className="pl-11 bg-slate-900/70 backdrop-blur-md border-slate-700 focus:ring-2 focus:ring-indigo-500/50 rounded-xl py-6 text-slate-200 placeholder:text-slate-500"
             />
           </div>
-        </div>
+        </motion.div>
 
-        {/* Error */}
+        {/* Error Alert */}
         <AnimatePresence>
           {error && (
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="flex items-center gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive backdrop-blur-sm"
+              className="flex items-center gap-3 rounded-xl border border-rose-500/30 bg-rose-950/30 backdrop-blur-md p-4 text-rose-300"
             >
               <AlertCircle className="h-5 w-5" />
               <span>{error}</span>
@@ -1302,363 +502,506 @@ export default function StockPage(): JSX.Element {
         </AnimatePresence>
 
         {/* Stock Table */}
-        <Card className="overflow-hidden border-0 shadow-xl bg-white/70 dark:bg-slate-900/70 backdrop-blur-md">
+        <motion.div
+          initial="hidden"
+          animate="visible"
+          variants={fadeInUp}
+          transition={{ delay: 0.3 }}
+          className="rounded-2xl border border-slate-800 bg-slate-900/40 backdrop-blur-md shadow-2xl overflow-hidden"
+        >
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
-                <TableRow className="bg-gradient-to-r from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 border-b-2 border-slate-300 dark:border-slate-600">
+                <TableRow className="border-b border-slate-800 bg-slate-900/80">
                   <TableHead className="w-8"></TableHead>
-                  <TableHead className="min-w-[160px]">Product</TableHead>
-                  <TableHead className="min-w-[80px]">Boxes</TableHead>
-                  <TableHead className="min-w-[90px]">Loose Singles</TableHead>
-                  <TableHead className="min-w-[90px]">Total Units</TableHead>
-                  <TableHead className="min-w-[100px]">Box Profit</TableHead>
-                  <TableHead className="min-w-[100px]">Single Profit</TableHead>
-                  <TableHead className="min-w-[100px]">Last Updated</TableHead>
+                  <TableHead className="min-w-[200px] text-slate-300 font-semibold">
+                    Product
+                  </TableHead>
+                  <TableHead className="min-w-[100px] text-slate-300 font-semibold">
+                    Boxes
+                  </TableHead>
+                  <TableHead className="min-w-[110px] text-slate-300 font-semibold">
+                    Loose Singles
+                  </TableHead>
+                  <TableHead className="min-w-[100px] text-slate-300 font-semibold">
+                    Total Units
+                  </TableHead>
+                  <TableHead className="min-w-[120px] text-slate-300 font-semibold">
+                    Box Profit
+                  </TableHead>
+                  <TableHead className="min-w-[120px] text-slate-300 font-semibold">
+                    Single Profit
+                  </TableHead>
+                  <TableHead className="min-w-[130px] text-slate-300 font-semibold">
+                    Last Updated
+                  </TableHead>
                   <TableHead className="w-12"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {loading && !paginatedStocks.length ? (
-                  [...Array(5)].map((_, i) => (
-                    <TableRow key={i}>
-                      <TableCell colSpan={9}>
-                        <Skeleton className="h-12 w-full" />
-                      </TableCell>
-                    </TableRow>
-                  ))
-                ) : paginatedStocks.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={9} className="h-32 text-center">
-                      <div className="flex flex-col items-center gap-2">
-                        <Package className="h-12 w-12 text-muted-foreground/50" />
-                        <p className="text-muted-foreground">No stock entries found.</p>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  paginatedStocks.map((stock) => {
-                    const isExpanded = expandedRows.has(stock.id);
-                    const product = stock.product;
-                    const unitsPerBox = product?.unitsPerBox || 1;
-                    const totalUnits = stock.boxQuantity * unitsPerBox + stock.singleQuantity;
-                    const looseSingles = stock.singleQuantity % unitsPerBox;
-                    const expectedSingles = stock.boxQuantity * unitsPerBox;
-                    const expectedBoxes = Math.floor(stock.singleQuantity / unitsPerBox);
-                    const isMismatch =
-                      stock.containerType === ContainerType.BOX
-                        ? stock.singleQuantity !== expectedSingles
-                        : stock.boxQuantity !== expectedBoxes;
-                    const isLowStock = stock.boxQuantity < LOW_STOCK_BOX_THRESHOLD;
-                    const profitData = calculateStockProfit(stock);
-                    return (
-                      <React.Fragment key={stock.id}>
-                        <TableRow
-                          className={cn(
-                            "group cursor-pointer transition-all duration-200 hover:bg-gradient-to-r hover:from-indigo-50/50 hover:to-purple-50/50 dark:hover:from-indigo-950/30 dark:hover:to-purple-950/30",
-                            isMismatch && "bg-rose-50/50 dark:bg-rose-950/20",
-                            isLowStock && !isMismatch && "border-l-4 border-l-amber-500"
-                          )}
-                          onClick={() => toggleRowExpanded(stock.id)}
-                        >
-                          <TableCell>
-                            <motion.div
-                              animate={{ rotate: isExpanded ? 90 : 0 }}
-                              transition={{ duration: 0.2 }}
-                            >
-                              <ChevronRight className="h-4 w-4" />
-                            </motion.div>
-                          </TableCell>
-                          <TableCell className="font-medium">
-                            <div className="flex items-center gap-2">
-                              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-100 to-purple-100 dark:from-indigo-900/50 dark:to-purple-900/50 flex items-center justify-center">
-                                <Package className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
-                              </div>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span className="max-w-[180px] truncate block cursor-default">
-                                    {product?.name || "—"}
-                                  </span>
-                                </TooltipTrigger>
-                                <TooltipContent side="top" className="max-w-xs break-words">
-                                  {product?.name}
-                                </TooltipContent>
-                              </Tooltip>
-                              {isLowStock && (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Badge
-                                      variant="destructive"
-                                      className="ml-1 text-xs"
-                                    >
-                                      <AlertTriangle className="h-3 w-3 mr-0.5" /> Low
-                                    </Badge>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    Only {stock.boxQuantity} box
-                                    {stock.boxQuantity !== 1 ? "es" : ""} left
-                                  </TooltipContent>
-                                </Tooltip>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <Badge
-                              variant="outline"
-                              className="font-mono bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800"
-                            >
-                              {stock.boxQuantity}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <Badge
-                              variant="outline"
-                              className="font-mono bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800"
-                            >
-                              {looseSingles}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="font-mono font-medium">
-                            {totalUnits}
-                          </TableCell>
-                          <TableCell className="font-mono text-emerald-600 dark:text-emerald-400">
-                            {profitData.boxProfit.toFixed(2)} {CURRENCY}
-                          </TableCell>
-                          <TableCell className="font-mono text-emerald-600 dark:text-emerald-400">
-                            {profitData.singleProfit.toFixed(2)} {CURRENCY}
-                          </TableCell>
-                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                            {new Date(stock.updatedAt).toLocaleDateString()}
-                          </TableCell>
-                          <TableCell>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  <MoreHorizontal className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openRestockDialog(stock);
-                                  }}
-                                >
-                                  <PlusCircle className="mr-2 h-4 w-4" /> Restock
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openAdjustDialog(stock);
-                                  }}
-                                >
-                                  <Calculator className="mr-2 h-4 w-4" /> Adjust
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openStockForm(stock);
-                                  }}
-                                >
-                                  <Pencil className="mr-2 h-4 w-4" /> Edit
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openStockHistory(stock);
-                                  }}
-                                >
-                                  <History className="mr-2 h-4 w-4" /> Stock History
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={(e: { stopPropagation: () => void; }) => {
-                                    e.stopPropagation();
-                                    if (product) openPriceHistory(product);
-                                  }}
-                                >
-                                  <Clock className="mr-2 h-4 w-4" /> Price History
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  className="text-destructive"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    confirmDelete(stock);
-                                  }}
-                                >
-                                  <Trash2 className="mr-2 h-4 w-4" /> Delete
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </TableCell>
-                        </TableRow>
-                        {isExpanded && (
-                          <TableRow>
-                            <TableCell colSpan={9} className="p-0">
+                {loading && !paginatedStocks.length
+                  ? [...Array(5)].map((_, i) => (
+                      <TableRow key={i}>
+                        <TableCell colSpan={9}>
+                          <Skeleton className="h-16 w-full bg-slate-800/50" />
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  : paginatedStocks.length === 0
+                  ? (
+                      <TableRow>
+                        <TableCell colSpan={9} className="h-64 text-center">
+                          <div className="flex flex-col items-center gap-3">
+                            <Package className="h-16 w-16 text-slate-600" />
+                            <p className="text-slate-400">No stock entries found.</p>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  : paginatedStocks.map((stock) => {
+                      const isExpanded = expandedRows.has(stock.id);
+                      const product = stock.product;
+                      const unitsPerBox = product?.unitsPerBox || 1;
+                      const totalUnits =
+                        stock.boxQuantity * unitsPerBox + stock.singleQuantity;
+                      const looseSingles = stock.singleQuantity % unitsPerBox;
+                      const expectedSingles = stock.boxQuantity * unitsPerBox;
+                      const expectedBoxes = Math.floor(
+                        stock.singleQuantity / unitsPerBox
+                      );
+                      const isMismatch =
+                        stock.containerType === "box"
+                          ? stock.singleQuantity !== expectedSingles
+                          : stock.boxQuantity !== expectedBoxes;
+                      const isLowStock = stock.boxQuantity < 2;
+                      const profitData = calculateStockProfit(stock);
+                      const layers = priceLayers[stock.id] || [];
+                      return (
+                        <React.Fragment key={stock.id}>
+                          <motion.tr
+                            layout
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className={cn(
+                              "group cursor-pointer transition-all duration-200 hover:bg-slate-800/50",
+                              isMismatch &&
+                                "bg-rose-950/30 border-l-4 border-l-rose-500",
+                              isLowStock &&
+                                !isMismatch &&
+                                "border-l-4 border-l-amber-500"
+                            )}
+                            onClick={() => toggleRowExpanded(stock.id)}
+                          >
+                            <TableCell className="w-8">
                               <motion.div
-                                initial={{ opacity: 0, height: 0 }}
-                                animate={{ opacity: 1, height: "auto" }}
-                                exit={{ opacity: 0, height: 0 }}
-                                className="px-6 py-5 bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800/50 dark:to-slate-900/50"
+                                animate={{ rotate: isExpanded ? 90 : 0 }}
+                                transition={{ duration: 0.2 }}
                               >
-                                <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-                                  {/* Product Details */}
-                                  <div className="space-y-3">
-                                    <div className="flex items-center gap-2">
-                                      <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center">
-                                        <Package className="h-4 w-4 text-white" />
-                                      </div>
-                                      <h4 className="font-semibold text-indigo-700 dark:text-indigo-300">
-                                        Product Details
-                                      </h4>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-white/50 dark:bg-slate-900/50 rounded-xl p-3 backdrop-blur-sm">
-                                      <span className="text-muted-foreground">Category:</span>
-                                      <span className="font-medium">{getCategoryName(product?.categoryId || "")}</span>
-                                      <span className="text-muted-foreground">Brand:</span>
-                                      <span className="font-medium">{getBrandName(product?.brandId || "")}</span>
-                                      <span className="text-muted-foreground">Packaging:</span>
-                                      <span className="font-medium capitalize">{getPackagingName(product?.packagingId || "")}</span>
-                                      <span className="text-muted-foreground">Units/Box:</span>
-                                      <span className="font-mono font-medium">{unitsPerBox}</span>
-                                      <span className="text-muted-foreground">Buy Price/Box:</span>
-                                      <span className="font-mono font-medium text-blue-600">{Number(product?.buyPricePerBox || 0).toFixed(2)} {CURRENCY}</span>
-                                      <span className="text-muted-foreground">Sell Price/Box:</span>
-                                      <span className="font-mono font-medium text-emerald-600">{Number(product?.sellPricePerBox || 0).toFixed(2)} {CURRENCY}</span>
-                                      <span className="text-muted-foreground">Sell Price/Unit:</span>
-                                      <span className="font-mono font-medium text-emerald-600">{Number(product?.sellPricePerUnit || 0).toFixed(2)} {CURRENCY}</span>
-                                    </div>
-                                  </div>
-                                  {/* Stock Breakdown */}
-                                  <div className="space-y-3">
-                                    <div className="flex items-center gap-2">
-                                      <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center">
-                                        <Calculator className="h-4 w-4 text-white" />
-                                      </div>
-                                      <h4 className="font-semibold text-amber-700 dark:text-amber-300">
-                                        Stock Breakdown
-                                      </h4>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-white/50 dark:bg-slate-900/50 rounded-xl p-3 backdrop-blur-sm">
-                                      <span className="text-muted-foreground">Full Boxes:</span>
-                                      <span className="font-mono font-medium">{stock.boxQuantity}</span>
-                                      <span className="text-muted-foreground">Loose Singles:</span>
-                                      <span className="font-mono font-medium">{looseSingles}</span>
-                                      <span className="text-muted-foreground">Total Units:</span>
-                                      <span className="font-mono font-bold text-lg">{totalUnits}</span>
-                                      <span className="text-muted-foreground">Box Equivalent:</span>
-                                      <span className="font-mono font-medium">{(totalUnits / unitsPerBox).toFixed(1)}</span>
-                                    </div>
-                                  </div>
-                                  {/* Financial Summary */}
-                                  <div className="space-y-3">
-                                    <div className="flex items-center gap-2">
-                                      <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center">
-                                        <DollarSign className="h-4 w-4 text-white" />
-                                      </div>
-                                      <h4 className="font-semibold text-emerald-700 dark:text-emerald-300">
-                                        Financial Summary
-                                      </h4>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-white/50 dark:bg-slate-900/50 rounded-xl p-3 backdrop-blur-sm">
-                                      <span className="text-muted-foreground">Cost per Unit:</span>
-                                      <span className="font-mono font-medium text-blue-600">{profitData.costPerUnit.toFixed(2)} {CURRENCY}</span>
-                                      <span className="text-muted-foreground">Unit Profit:</span>
-                                      <span className="font-mono font-medium text-emerald-600">{profitData.unitProfit.toFixed(2)} {CURRENCY}</span>
-                                      <span className="text-muted-foreground">Total Cost:</span>
-                                      <span className="font-mono font-medium text-rose-600">{profitData.totalCost.toFixed(2)} {CURRENCY}</span>
-                                      <span className="text-muted-foreground">Total Revenue:</span>
-                                      <span className="font-mono font-medium text-emerald-600">{profitData.totalRevenue.toFixed(2)} {CURRENCY}</span>
-                                      <span className="text-muted-foreground font-semibold">Total Profit:</span>
-                                      <span className="font-mono font-bold text-lg text-emerald-700 dark:text-emerald-300">{profitData.totalProfit.toFixed(2)} {CURRENCY}</span>
-                                    </div>
-                                  </div>
-                                  {/* Consistency Check */}
-                                  <div className="space-y-3">
-                                    <div className="flex items-center gap-2">
-                                      <div
-                                        className={cn(
-                                          "h-8 w-8 rounded-lg flex items-center justify-center",
-                                          isMismatch
-                                            ? "bg-gradient-to-br from-rose-500 to-pink-500"
-                                            : "bg-gradient-to-br from-emerald-500 to-teal-500"
-                                        )}
-                                      >
-                                        {isMismatch ? (
-                                          <AlertCircle className="h-4 w-4 text-white" />
-                                        ) : (
-                                          <CheckCircle2 className="h-4 w-4 text-white" />
-                                        )}
-                                      </div>
-                                      <h4
-                                        className={cn(
-                                          "font-semibold",
-                                          isMismatch
-                                            ? "text-rose-700 dark:text-rose-300"
-                                            : "text-emerald-700 dark:text-emerald-300"
-                                        )}
-                                      >
-                                        Consistency Check
-                                      </h4>
-                                    </div>
-                                    {isMismatch ? (
-                                      <div className="rounded-xl border-2 border-rose-200 dark:border-rose-800 bg-rose-50/80 dark:bg-rose-950/30 p-4 backdrop-blur-sm">
-                                        <p className="text-sm font-medium text-rose-700 dark:text-rose-300 flex items-center gap-1">
-                                          <AlertCircle className="h-4 w-4" />
-                                          Mismatch detected!
-                                        </p>
-                                        <p className="mt-2 text-sm text-rose-600 dark:text-rose-400">
-                                          {stock.containerType === ContainerType.BOX
-                                            ? `Expected ${expectedSingles} singles based on ${stock.boxQuantity} boxes.`
-                                            : `Expected ${expectedBoxes} boxes based on ${stock.singleQuantity} singles.`}
-                                        </p>
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          className="mt-3 border-rose-300 dark:border-rose-700"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            openAdjustDialog(stock);
-                                          }}
-                                        >
-                                          <Calculator className="mr-2 h-3 w-3" />
-                                          Fix Mismatch
-                                        </Button>
-                                      </div>
-                                    ) : (
-                                      <div className="rounded-xl border-2 border-emerald-200 dark:border-emerald-800 bg-emerald-50/80 dark:bg-emerald-950/30 p-4 backdrop-blur-sm">
-                                        <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
-                                          <CheckCircle2 className="h-4 w-4" />
-                                          Quantities are consistent
-                                        </p>
-                                        <p className="mt-2 text-sm text-emerald-600 dark:text-emerald-400">
-                                          The box and single quantities align perfectly with the product's units per box.
-                                        </p>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
+                                <ChevronRight className="h-4 w-4 text-slate-400" />
                               </motion.div>
                             </TableCell>
-                          </TableRow>
-                        )}
-                      </React.Fragment>
-                    );
-                  })
-                )}
+                            <TableCell className="font-medium">
+                              <div className="flex items-center gap-3">
+                                <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 flex items-center justify-center">
+                                  <Package className="h-4 w-4 text-indigo-400" />
+                                </div>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="max-w-[200px] truncate block text-slate-200">
+                                      {product?.name || "—"}
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top">
+                                    {product?.name}
+                                  </TooltipContent>
+                                </Tooltip>
+                                {product?.currentPriceId && (
+                                  <Badge
+                                    variant="outline"
+                                    className="ml-2 text-[10px] bg-emerald-950/40 border-emerald-500/40 text-emerald-300 flex items-center gap-1"
+                                  >
+                                    <Zap className="h-2.5 w-2.5" /> Active Price
+                                  </Badge>
+                                )}
+                                {isLowStock && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <motion.div
+                                        animate={{ scale: [1, 1.05, 1] }}
+                                        transition={{ repeat: Infinity, duration: 1.5 }}
+                                      >
+                                        <Badge
+                                          variant="destructive"
+                                          className="ml-2 text-xs bg-amber-600/20 text-amber-400 border-amber-500/40"
+                                        >
+                                          <AlertTriangle className="h-3 w-3 mr-0.5" /> Low
+                                        </Badge>
+                                      </motion.div>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      Only {stock.boxQuantity} box
+                                      {stock.boxQuantity !== 1 ? "es" : ""} left
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge
+                                variant="outline"
+                                className="font-mono bg-slate-800/60 border-slate-700 text-slate-300"
+                              >
+                                {formatInteger(stock.boxQuantity)}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <Badge
+                                variant="outline"
+                                className="font-mono bg-slate-800/60 border-slate-700 text-slate-300"
+                              >
+                                {formatInteger(looseSingles)}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="font-mono font-semibold text-slate-200">
+                              {formatInteger(totalUnits)}
+                            </TableCell>
+                            <TableCell className="font-mono text-emerald-400">
+                              {formatNumber(profitData.boxProfit)} {CURRENCY}
+                            </TableCell>
+                            <TableCell className="font-mono text-emerald-400">
+                              {formatNumber(profitData.singleProfit)} {CURRENCY}
+                            </TableCell>
+                            <TableCell className="text-sm text-slate-400 whitespace-nowrap">
+                              {new Date(stock.updatedAt).toLocaleDateString()}
+                            </TableCell>
+                            <TableCell>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-slate-700/50"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <MoreHorizontal className="h-4 w-4 text-slate-400" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent
+                                  align="end"
+                                  className="bg-slate-800 border-slate-700"
+                                >
+                                  <DropdownMenuItem
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openRestockDialog(stock);
+                                    }}
+                                    className="text-slate-200 focus:bg-slate-700"
+                                  >
+                                    <PlusCircle className="mr-2 h-4 w-4" /> Restock
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openAdjustDialog(stock);
+                                    }}
+                                    className="text-slate-200 focus:bg-slate-700"
+                                  >
+                                    <Calculator className="mr-2 h-4 w-4" /> Adjust
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openStockForm(stock);
+                                    }}
+                                    className="text-slate-200 focus:bg-slate-700"
+                                  >
+                                    <Pencil className="mr-2 h-4 w-4" /> Edit
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator className="bg-slate-700" />
+                                  <DropdownMenuItem
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openStockHistory(stock);
+                                    }}
+                                    className="text-slate-200 focus:bg-slate-700"
+                                  >
+                                    <History className="mr-2 h-4 w-4" /> Stock History
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (product) openPriceHistory(product);
+                                    }}
+                                    className="text-slate-200 focus:bg-slate-700"
+                                  >
+                                    <Clock className="mr-2 h-4 w-4" /> Price History
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator className="bg-slate-700" />
+                                  <DropdownMenuItem
+                                    className="text-rose-400 focus:bg-slate-700 focus:text-rose-300"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      confirmDelete(stock);
+                                    }}
+                                  >
+                                    <Trash2 className="mr-2 h-4 w-4" /> Delete
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </TableCell>
+                          </motion.tr>
+                          {isExpanded && (
+                            <TableRow>
+                              <TableCell colSpan={9} className="p-0">
+                                <motion.div
+                                  initial={{ opacity: 0, height: 0 }}
+                                  animate={{ opacity: 1, height: "auto" }}
+                                  exit={{ opacity: 0, height: 0 }}
+                                  transition={{ duration: 0.3 }}
+                                  className="px-8 py-6 bg-slate-900/70 backdrop-blur-sm border-t border-slate-800"
+                                >
+                                  <div className="grid gap-6 md:grid-cols-3">
+                                    {/* Product Details */}
+                                    <motion.div
+                                      initial={{ opacity: 0, x: -20 }}
+                                      animate={{ opacity: 1, x: 0 }}
+                                      transition={{ delay: 0.1 }}
+                                      className="space-y-3"
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center shadow-md">
+                                          <Package className="h-4 w-4 text-white" />
+                                        </div>
+                                        <h4 className="font-semibold text-indigo-300">
+                                          Product Details
+                                        </h4>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+                                        <span className="text-slate-400">Category:</span>
+                                        <span className="font-medium text-slate-200">
+                                          {getCategoryName(product?.categoryId || "")}
+                                        </span>
+                                        <span className="text-slate-400">Brand:</span>
+                                        <span className="font-medium text-slate-200">
+                                          {getBrandName(product?.brandId || "")}
+                                        </span>
+                                        <span className="text-slate-400">Packaging:</span>
+                                        <span className="font-medium text-slate-200 capitalize">
+                                          {getPackagingName(product?.packagingId || "")}
+                                        </span>
+                                        <span className="text-slate-400">Units/Box:</span>
+                                        <span className="font-mono font-medium text-slate-200">
+                                          {unitsPerBox}
+                                        </span>
+                                        <span className="text-slate-400">Buy Price/Box:</span>
+                                        <span className="font-mono font-medium text-blue-400">
+                                          {formatNumber(product?.buyPricePerBox || 0)} {CURRENCY}
+                                        </span>
+                                        <span className="text-slate-400">Sell Price/Box:</span>
+                                        <span className="font-mono font-medium text-emerald-400">
+                                          {formatNumber(product?.sellPricePerBox || 0)} {CURRENCY}
+                                        </span>
+                                        <span className="text-slate-400">Sell Price/Unit:</span>
+                                        <span className="font-mono font-medium text-emerald-400">
+                                          {formatNumber(product?.sellPricePerUnit || 0)} {CURRENCY}
+                                        </span>
+                                      </div>
+                                    </motion.div>
+
+                                    {/* Stock Breakdown */}
+                                    <motion.div
+                                      initial={{ opacity: 0, y: 20 }}
+                                      animate={{ opacity: 1, y: 0 }}
+                                      transition={{ delay: 0.15 }}
+                                      className="space-y-3"
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shadow-md">
+                                          <Calculator className="h-4 w-4 text-white" />
+                                        </div>
+                                        <h4 className="font-semibold text-amber-300">
+                                          Stock Breakdown
+                                        </h4>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+                                        <span className="text-slate-400">Full Boxes:</span>
+                                        <span className="font-mono font-medium text-slate-200">
+                                          {formatInteger(stock.boxQuantity)}
+                                        </span>
+                                        <span className="text-slate-400">Loose Singles:</span>
+                                        <span className="font-mono font-medium text-slate-200">
+                                          {formatInteger(looseSingles)}
+                                        </span>
+                                        <span className="text-slate-400">Total Units:</span>
+                                        <span className="font-mono font-bold text-lg text-slate-100">
+                                          {formatInteger(totalUnits)}
+                                        </span>
+                                        <span className="text-slate-400">Box Equivalent:</span>
+                                        <span className="font-mono font-medium text-slate-200">
+                                          {(totalUnits / unitsPerBox).toFixed(1)}
+                                        </span>
+                                      </div>
+                                    </motion.div>
+
+                                    {/* Financial Health */}
+                                    <motion.div
+                                      initial={{ opacity: 0, x: 20 }}
+                                      animate={{ opacity: 1, x: 0 }}
+                                      transition={{ delay: 0.2 }}
+                                      className="space-y-3"
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center shadow-md">
+                                          <DollarSign className="h-4 w-4 text-white" />
+                                        </div>
+                                        <h4 className="font-semibold text-emerald-300">
+                                          Financial Health
+                                        </h4>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm bg-slate-800/50 rounded-xl p-4 border border-slate-700">
+                                        <span className="text-slate-400">Cost per Unit:</span>
+                                        <span className="font-mono font-medium text-blue-400">
+                                          {formatNumber(profitData.costPerUnit)} {CURRENCY}
+                                        </span>
+                                        <span className="text-slate-400">Unit Profit:</span>
+                                        <span className="font-mono font-medium text-emerald-400">
+                                          {formatNumber(profitData.unitProfit)} {CURRENCY}
+                                        </span>
+                                        <span className="text-slate-400">Total Cost:</span>
+                                        <span className="font-mono font-medium text-rose-400">
+                                          {formatNumber(profitData.totalCost)} {CURRENCY}
+                                        </span>
+                                        <span className="text-slate-400">Total Revenue:</span>
+                                        <span className="font-mono font-medium text-emerald-400">
+                                          {formatNumber(profitData.totalRevenue)} {CURRENCY}
+                                        </span>
+                                        <span className="text-slate-400 font-semibold">
+                                          Total Profit:
+                                        </span>
+                                        <span className="font-mono font-bold text-lg text-emerald-300">
+                                          {formatNumber(profitData.totalProfit)} {CURRENCY}
+                                        </span>
+                                      </div>
+                                    </motion.div>
+                                  </div>
+
+                                  {/* Price Layers Breakdown */}
+                                  {layers.length > 0 && (
+                                    <motion.div
+                                      initial={{ opacity: 0, y: 20 }}
+                                      animate={{ opacity: 1, y: 0 }}
+                                      transition={{ delay: 0.25 }}
+                                      className="mt-6 space-y-3"
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-500 flex items-center justify-center shadow-md">
+                                          <Layers className="h-4 w-4 text-white" />
+                                        </div>
+                                        <h4 className="font-semibold text-cyan-300">
+                                          Stock Layers (by Purchase Price)
+                                        </h4>
+                                      </div>
+                                      <div className="space-y-2">
+                                        {layers.map((layer, idx) => (
+                                          <motion.div
+                                            key={idx}
+                                            initial={{ opacity: 0, x: -10 }}
+                                            animate={{ opacity: 1, x: 0 }}
+                                            transition={{ delay: idx * 0.05 }}
+                                            className="bg-slate-800/30 rounded-xl p-3 border border-slate-700"
+                                          >
+                                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+                                              <div>
+                                                <span className="text-slate-400">
+                                                  Buy Price:
+                                                </span>
+                                                <span className="ml-2 font-mono text-blue-400">
+                                                  {formatNumber(layer.buyPricePerBox)} {CURRENCY}/box
+                                                </span>
+                                              </div>
+                                              <div>
+                                                <span className="text-slate-400">
+                                                  Quantity:
+                                                </span>
+                                                <span className="ml-2 font-mono text-slate-200">
+                                                  {formatInteger(layer.boxQuantity)} boxes + {formatInteger(layer.singleQuantity)} singles
+                                                </span>
+                                              </div>
+                                              <div>
+                                                <span className="text-slate-400">
+                                                  Profit/Unit:
+                                                </span>
+                                                <span
+                                                  className={cn(
+                                                    "ml-2 font-mono",
+                                                    layer.profitPerUnit >= 0
+                                                      ? "text-emerald-400"
+                                                      : "text-rose-400"
+                                                  )}
+                                                >
+                                                  {formatNumber(layer.profitPerUnit)} {CURRENCY}
+                                                </span>
+                                              </div>
+                                              <div>
+                                                <span className="text-slate-400">
+                                                  Potential Profit:
+                                                </span>
+                                                <span className="ml-2 font-mono font-semibold text-emerald-300">
+                                                  {formatNumber(layer.potentialProfit)} {CURRENCY}
+                                                </span>
+                                              </div>
+                                            </div>
+                                          </motion.div>
+                                        ))}
+                                      </div>
+                                    </motion.div>
+                                  )}
+
+                                  {/* Consistency Warning */}
+                                  {isMismatch && (
+                                    <motion.div
+                                      initial={{ opacity: 0, scale: 0.95 }}
+                                      animate={{ opacity: 1, scale: 1 }}
+                                      transition={{ delay: 0.3 }}
+                                      className="mt-4 rounded-xl border border-rose-500/30 bg-rose-950/30 p-4 flex items-center justify-between"
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        <AlertCircle className="h-5 w-5 text-rose-400" />
+                                        <p className="text-sm text-rose-300">
+                                          {stock.containerType === "box"
+                                            ? `Expected ${formatInteger(expectedSingles)} singles based on ${formatInteger(stock.boxQuantity)} boxes.`
+                                            : `Expected ${formatInteger(expectedBoxes)} boxes based on ${formatInteger(stock.singleQuantity)} singles.`}
+                                        </p>
+                                      </div>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="border-rose-500/50 text-rose-400 hover:bg-rose-950/50"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openAdjustDialog(stock);
+                                        }}
+                                      >
+                                        <Calculator className="mr-2 h-3 w-3" />
+                                        Fix Mismatch
+                                      </Button>
+                                    </motion.div>
+                                  )}
+                                </motion.div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
               </TableBody>
             </Table>
           </div>
 
-          {/* Pagination Controls */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 border-t border-slate-200 dark:border-slate-700 bg-white/40 dark:bg-slate-900/40 backdrop-blur-sm">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          {/* Pagination */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-5 border-t border-slate-800 bg-slate-900/30">
+            <div className="flex items-center gap-2 text-sm text-slate-400">
               <span>Rows per page:</span>
               <Select
                 value={String(pageSize)}
@@ -1667,10 +1010,10 @@ export default function StockPage(): JSX.Element {
                   setCurrentPage(1);
                 }}
               >
-                <SelectTrigger className="w-20 h-8">
+                <SelectTrigger className="w-20 h-9 bg-slate-800/50 border-slate-700 text-slate-200">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="bg-slate-800 border-slate-700">
                   <SelectItem value="5">5</SelectItem>
                   <SelectItem value="10">10</SelectItem>
                   <SelectItem value="20">20</SelectItem>
@@ -1678,7 +1021,6 @@ export default function StockPage(): JSX.Element {
                 </SelectContent>
               </Select>
             </div>
-
             <div className="flex items-center gap-1">
               <Pagination>
                 <PaginationContent>
@@ -1686,7 +1028,8 @@ export default function StockPage(): JSX.Element {
                     <PaginationPrevious
                       onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
                       className={cn(
-                        currentPage === 1 ? "pointer-events-none opacity-50" : ""
+                        currentPage === 1 && "pointer-events-none opacity-50",
+                        "bg-slate-800/50 border-slate-700 text-slate-300 hover:bg-slate-700"
                       )}
                     />
                   </PaginationItem>
@@ -1701,13 +1044,18 @@ export default function StockPage(): JSX.Element {
                       <React.Fragment key={page}>
                         {idx > 0 && page - arr[idx - 1] > 1 && (
                           <PaginationItem>
-                            <span className="px-2 py-1">...</span>
+                            <span className="px-2 py-1 text-slate-400">...</span>
                           </PaginationItem>
                         )}
                         <PaginationItem>
                           <PaginationLink
                             onClick={() => setCurrentPage(page)}
                             isActive={currentPage === page}
+                            className={cn(
+                              currentPage === page &&
+                                "bg-indigo-600 text-white border-indigo-500",
+                              "bg-slate-800/50 border-slate-700 text-slate-300 hover:bg-slate-700"
+                            )}
                           >
                             {page}
                           </PaginationLink>
@@ -1720,43 +1068,43 @@ export default function StockPage(): JSX.Element {
                         setCurrentPage((prev) => Math.min(totalPages, prev + 1))
                       }
                       className={cn(
-                        currentPage === totalPages
-                          ? "pointer-events-none opacity-50"
-                          : ""
+                        currentPage === totalPages && "pointer-events-none opacity-50",
+                        "bg-slate-800/50 border-slate-700 text-slate-300 hover:bg-slate-700"
                       )}
                     />
                   </PaginationItem>
                 </PaginationContent>
               </Pagination>
             </div>
-
-            <div className="text-sm text-muted-foreground">
+            <div className="text-sm text-slate-400">
               {(currentPage - 1) * pageSize + 1}–
               {Math.min(currentPage * pageSize, filteredStocks.length)} of{" "}
               {filteredStocks.length}
             </div>
           </div>
-        </Card>
+        </motion.div>
 
         {/* ========== DIALOGS ========== */}
 
-        {/* Delete Confirmation Dialog */}
+        {/* Delete Confirmation */}
         <AlertDialog open={deleteAlertOpen} onOpenChange={setDeleteAlertOpen}>
-          <AlertDialogContent>
+          <AlertDialogContent className="bg-slate-900 border-slate-800 text-slate-200">
             <AlertDialogHeader>
               <AlertDialogTitle>Delete Stock Entry</AlertDialogTitle>
-              <AlertDialogDescription>
+              <AlertDialogDescription className="text-slate-400">
                 Are you sure you want to delete stock for{" "}
-                <strong>{deleteStock?.product?.name}</strong>?
+                <strong className="text-rose-400">{deleteStock?.product?.name}</strong>?
                 <br />
-                You will have {UNDO_SECONDS} seconds to undo this action.
+                You will have 10 seconds to undo this action.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogCancel className="bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700">
+                Cancel
+              </AlertDialogCancel>
               <AlertDialogAction
                 onClick={performDelete}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                className="bg-rose-600 hover:bg-rose-700 text-white"
               >
                 Delete
               </AlertDialogAction>
@@ -1764,31 +1112,31 @@ export default function StockPage(): JSX.Element {
           </AlertDialogContent>
         </AlertDialog>
 
-        {/* Stock Form Dialog */}
+        {/* Stock Form */}
         <Dialog open={formDialogOpen} onOpenChange={setFormDialogOpen}>
-          <DialogContent className="max-w-md border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
+          <DialogContent className="max-w-md border-0 bg-gradient-to-b from-slate-900 to-slate-950 shadow-2xl rounded-2xl">
             <DialogHeader>
-              <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+              <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-indigo-500 to-purple-500 bg-clip-text text-transparent">
                 {editingId ? "Edit Stock" : "Add Stock"}
               </DialogTitle>
-              <DialogDescription>
+              <DialogDescription className="text-slate-400">
                 {editingId
                   ? "Update stock quantities"
                   : "Add new stock entry (only if product has no stock yet)"}
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 py-4">
+            <div className="space-y-5 py-4">
               <div className="space-y-2">
-                <Label className="text-sm font-medium">Product *</Label>
+                <Label className="text-sm font-medium text-slate-300">Product *</Label>
                 <Select
                   value={form.productId}
                   onValueChange={handleStockProductSelect}
                   disabled={!!editingId}
                 >
-                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                  <SelectTrigger className="bg-slate-800/50 border-slate-700 text-slate-200">
                     <SelectValue placeholder="Select a product" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="bg-slate-800 border-slate-700">
                     {products
                       .filter((p) => !editingId || p.id === form.productId)
                       .map((p) => {
@@ -1798,6 +1146,7 @@ export default function StockPage(): JSX.Element {
                             key={p.id}
                             value={p.id}
                             disabled={!editingId && hasStock}
+                            className="text-slate-200"
                           >
                             {p.name} ({p.unitsPerBox} per box)
                             {!editingId && hasStock && " (Already has stock)"}
@@ -1807,60 +1156,60 @@ export default function StockPage(): JSX.Element {
                   </SelectContent>
                 </Select>
                 {!editingId && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                  <p className="text-xs text-amber-400">
                     Only products without existing stock are shown. Use "Restock" to add more.
                   </p>
                 )}
               </div>
               <div className="space-y-2">
-                <Label className="text-sm font-medium">Container Type *</Label>
+                <Label className="text-sm font-medium text-slate-300">Container Type *</Label>
                 <Select
                   value={form.containerType}
                   onValueChange={(v) =>
-                    handleStockContainerTypeChange(v as ContainerType)
+                    handleStockContainerTypeChange(v as "box" | "single")
                   }
                 >
-                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                  <SelectTrigger className="bg-slate-800/50 border-slate-700 text-slate-200">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ContainerType.BOX}>
-                      Box (primary)
-                    </SelectItem>
-                    <SelectItem value={ContainerType.SINGLE}>
-                      Single (primary)
-                    </SelectItem>
+                  <SelectContent className="bg-slate-800 border-slate-700">
+                    <SelectItem value="box">Box (primary)</SelectItem>
+                    <SelectItem value="single">Single (primary)</SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-slate-400">
                   Choose which quantity to enter; the other auto‑calculates.
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label className="text-sm font-medium">Box Quantity</Label>
+                  <Label className="text-sm font-medium text-slate-300">Box Quantity</Label>
                   <Input
                     type="number"
                     min={0}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={form.boxQuantity}
                     onChange={(e) =>
                       handleStockQuantityChange("boxQuantity", e.target.value)
                     }
-                    disabled={form.containerType === ContainerType.SINGLE}
-                    className="font-mono bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                    disabled={form.containerType === "single"}
+                    className="bg-slate-800/50 border-slate-700 text-slate-200 font-mono"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label className="text-sm font-medium">Single Quantity</Label>
+                  <Label className="text-sm font-medium text-slate-300">Single Quantity</Label>
                   <Input
                     type="number"
                     min={0}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={form.singleQuantity}
                     onChange={(e) =>
                       handleStockQuantityChange("singleQuantity", e.target.value)
                     }
-                    disabled={form.containerType === ContainerType.BOX}
-                    className="font-mono bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                    disabled={form.containerType === "box"}
+                    className="bg-slate-800/50 border-slate-700 text-slate-200 font-mono"
                   />
                 </div>
               </div>
@@ -1869,14 +1218,14 @@ export default function StockPage(): JSX.Element {
               <Button
                 variant="outline"
                 onClick={() => setFormDialogOpen(false)}
-                className="border-slate-300 dark:border-slate-700"
+                className="border-slate-700 text-slate-300 hover:bg-slate-800"
               >
                 Cancel
               </Button>
               <Button
                 onClick={handleStockSubmit}
                 disabled={loading}
-                className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white"
+                className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white"
               >
                 {editingId ? "Update" : "Create"}
               </Button>
@@ -1886,67 +1235,188 @@ export default function StockPage(): JSX.Element {
 
         {/* Restock Dialog */}
         <Dialog open={restockDialogOpen} onOpenChange={setRestockDialogOpen}>
-          <DialogContent className="max-w-md border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
+          <DialogContent className="max-w-lg border-0 bg-gradient-to-b from-slate-900 to-slate-950 shadow-2xl rounded-2xl">
             <DialogHeader>
-              <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
+              <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-emerald-500 to-teal-500 bg-clip-text text-transparent">
                 Restock Product
               </DialogTitle>
-              <DialogDescription>
-                {restockStock?.product?.name} - Current: {restockStock?.boxQuantity}{" "}
-                boxes, {restockStock?.singleQuantity} singles
+              <DialogDescription className="text-slate-400">
+                {restockStock?.product?.name} - Current: {formatInteger(restockStock?.boxQuantity || 0)}{" "}
+                boxes, {formatInteger(restockStock?.singleQuantity || 0)} singles
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 py-4">
+            <div className="space-y-5 py-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label className="text-sm font-medium">Boxes to add</Label>
+                  <Label className="text-sm font-medium text-slate-300">Boxes to add</Label>
                   <Input
                     type="number"
                     min={0}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={restockBoxes}
                     onChange={(e) => setRestockBoxes(Number(e.target.value) || 0)}
-                    className="font-mono bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                    className="bg-slate-800/50 border-slate-700 text-slate-200 font-mono"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label className="text-sm font-medium">Singles to add</Label>
+                  <Label className="text-sm font-medium text-slate-300">Singles to add</Label>
                   <Input
                     type="number"
                     min={0}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={restockSingles}
                     onChange={(e) => setRestockSingles(Number(e.target.value) || 0)}
-                    className="font-mono bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                    className="bg-slate-800/50 border-slate-700 text-slate-200 font-mono"
                   />
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label>New Buy Price per Box (optional)</Label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  min={0}
-                  placeholder={`Current: ${Number(restockStock?.product?.buyPricePerBox || 0).toFixed(2)} ${CURRENCY}`}
-                  value={restockNewBuyPrice}
-                  onChange={(e) => setRestockNewBuyPrice(e.target.value)}
-                  className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Leave blank to keep current buy price.
-                </p>
+
+              <div className="space-y-3 border-t border-slate-800 pt-3">
+                <Label className="text-sm font-medium text-slate-300">Price for this restock</Label>
+                <RadioGroup
+                  value={restockPriceOption}
+                  onValueChange={(v) => setRestockPriceOption(v as any)}
+                  className="space-y-2"
+                >
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="keep" id="keep" />
+                    <Label htmlFor="keep" className="cursor-pointer text-slate-300">
+                      Keep current buy price ({formatNumber(restockStock?.product?.buyPricePerBox || 0)} {CURRENCY}/box)
+                    </Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="existing" id="existing" />
+                    <Label htmlFor="existing" className="cursor-pointer text-slate-300">
+                      Use an existing price from history
+                    </Label>
+                  </div>
+                  {restockPriceOption === "existing" && (
+                    <div className="ml-6">
+                      <Select
+                        value={restockExistingPriceId}
+                        onValueChange={setRestockExistingPriceId}
+                        disabled={loadingPrices}
+                      >
+                        <SelectTrigger className="bg-slate-800/50 border-slate-700 text-slate-200">
+                          <SelectValue placeholder="Select a price record" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-slate-800 border-slate-700">
+                          {availablePrices.map((price) => (
+                            <SelectItem key={price.id} value={price.id} className="text-slate-200">
+                              {new Date(price.startAt).toLocaleDateString()} - Buy: {formatNumber(price.buyPricePerBox)} {CURRENCY}
+                              {price.endAt ? " (ended)" : " (active)"}
+                            </SelectItem>
+                          ))}
+                          {availablePrices.length === 0 && !loadingPrices && (
+                            <SelectItem value="no-price" disabled>
+                              No price history found
+                            </SelectItem>
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="new" id="new" />
+                    <Label htmlFor="new" className="cursor-pointer text-slate-300">
+                      Create a new price (will become active)
+                    </Label>
+                  </div>
+                  {restockPriceOption === "new" && (
+                    <div className="ml-6 space-y-3">
+                      <Input
+                        type="number"
+                        step="0.01"
+                        inputMode="decimal"
+                        placeholder="New buy price per box *"
+                        value={restockNewBuyPrice}
+                        onChange={(e) => setRestockNewBuyPrice(e.target.value)}
+                        className="bg-slate-800/50 border-slate-700 text-slate-200"
+                      />
+                      <Input
+                        type="number"
+                        step="0.01"
+                        inputMode="decimal"
+                        placeholder="New sell price per box (optional)"
+                        value={restockNewSellPriceBox}
+                        onChange={(e) => setRestockNewSellPriceBox(e.target.value)}
+                        className="bg-slate-800/50 border-slate-700 text-slate-200"
+                      />
+                      <Input
+                        type="number"
+                        step="0.01"
+                        inputMode="decimal"
+                        placeholder="New sell price per unit (optional)"
+                        value={restockNewSellPriceUnit}
+                        onChange={(e) => setRestockNewSellPriceUnit(e.target.value)}
+                        className="bg-slate-800/50 border-slate-700 text-slate-200"
+                      />
+                      <p className="text-xs text-slate-400">
+                        If you provide new sell prices, they will be used for this restock and future sales.
+                      </p>
+                    </div>
+                  )}
+                </RadioGroup>
               </div>
-              <div className="flex items-center gap-2">
+
+              {restockPriceOption !== "keep" && (restockNewBuyPrice || restockExistingPriceId) && (
+                <div className="rounded-xl bg-slate-800/50 border border-blue-800/50 p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Info className="h-4 w-4 text-blue-400" />
+                    <p className="text-sm font-semibold text-blue-300">Profit Impact Preview</p>
+                  </div>
+                  {(() => {
+                    const impact = getProfitImpact();
+                    if (!impact) return null;
+                    return (
+                      <div className="space-y-1 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Old cost per unit:</span>
+                          <span className="font-mono text-slate-200">{formatNumber(impact.oldCostPerUnit)} {CURRENCY}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">New cost per unit:</span>
+                          <span className={cn("font-mono", impact.isHigher ? "text-rose-400" : "text-emerald-400")}>
+                            {formatNumber(impact.newCostPerUnit)} {CURRENCY}
+                          </span>
+                        </div>
+                        <Separator className="my-1 bg-slate-700" />
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Added units:</span>
+                          <span className="font-mono font-medium text-slate-200">{formatInteger(impact.addedUnits)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Cost difference:</span>
+                          <span className={cn("font-mono font-bold", impact.costDifference > 0 ? "text-rose-400" : "text-emerald-400")}>
+                            {impact.costDifference > 0 ? "+" : ""}{formatNumber(impact.costDifference)} {CURRENCY}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-2">
+                          {impact.costDifference > 0
+                            ? "⚠️ Your cost basis increases, reducing future profit per unit."
+                            : "✓ Your cost basis decreases, improving future profit per unit."}
+                        </p>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              <div className="flex items-center gap-3">
                 <Switch checked={restockIsFree} onCheckedChange={setRestockIsFree} />
-                <Label className="flex items-center gap-1">
+                <Label className="flex items-center gap-1 text-slate-300">
                   <Gift className="h-4 w-4" /> Free Stock (no cost)
                 </Label>
               </div>
               <div className="space-y-2">
-                <Label>Notes (optional)</Label>
+                <Label className="text-slate-300">Notes (optional)</Label>
                 <Input
                   placeholder="e.g., Free stock, purchase, etc."
                   value={restockNotes}
                   onChange={(e) => setRestockNotes(e.target.value)}
-                  className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                  className="bg-slate-800/50 border-slate-700 text-slate-200"
                 />
               </div>
             </div>
@@ -1954,14 +1424,18 @@ export default function StockPage(): JSX.Element {
               <Button
                 variant="outline"
                 onClick={() => setRestockDialogOpen(false)}
-                className="border-slate-300 dark:border-slate-700"
+                className="border-slate-700 text-slate-300 hover:bg-slate-800"
               >
                 Cancel
               </Button>
               <Button
                 onClick={handleRestock}
-                disabled={loading}
-                className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white"
+                disabled={
+                  loading ||
+                  (restockPriceOption === "existing" && !restockExistingPriceId) ||
+                  (restockPriceOption === "new" && !restockNewBuyPrice)
+                }
+                className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white"
               >
                 Confirm Restock
               </Button>
@@ -1971,19 +1445,19 @@ export default function StockPage(): JSX.Element {
 
         {/* Adjustment Dialog */}
         <Dialog open={adjustDialogOpen} onOpenChange={setAdjustDialogOpen}>
-          <DialogContent className="max-w-md border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
+          <DialogContent className="max-w-md border-0 bg-gradient-to-b from-slate-900 to-slate-950 shadow-2xl rounded-2xl">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-amber-600 to-orange-600 bg-clip-text text-transparent">
                 Adjust Stock
               </DialogTitle>
-              <DialogDescription>
-                {adjustStock?.product?.name} - Current: {adjustStock?.boxQuantity}{" "}
-                boxes, {adjustStock?.singleQuantity} singles
+              <DialogDescription className="text-slate-400">
+                {adjustStock?.product?.name} - Current: {formatInteger(adjustStock?.boxQuantity || 0)}{" "}
+                boxes, {formatInteger(adjustStock?.singleQuantity || 0)} singles
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label>Adjustment Mode</Label>
+                <Label className="text-slate-300">Adjustment Mode</Label>
                 <div className="flex gap-2">
                   <Button
                     variant={adjustMode === "add" ? "default" : "outline"}
@@ -1994,8 +1468,7 @@ export default function StockPage(): JSX.Element {
                     )}
                     onClick={() => setAdjustMode("add")}
                   >
-                    <PlusCircle className="mr-2 h-4 w-4" />
-                    Add
+                    <PlusCircle className="mr-2 h-4 w-4" /> Add
                   </Button>
                   <Button
                     variant={adjustMode === "subtract" ? "default" : "outline"}
@@ -2006,8 +1479,7 @@ export default function StockPage(): JSX.Element {
                     )}
                     onClick={() => setAdjustMode("subtract")}
                   >
-                    <MinusCircle className="mr-2 h-4 w-4" />
-                    Subtract
+                    <MinusCircle className="mr-2 h-4 w-4" /> Subtract
                   </Button>
                   <Button
                     variant={adjustMode === "set" ? "default" : "outline"}
@@ -2018,58 +1490,61 @@ export default function StockPage(): JSX.Element {
                     )}
                     onClick={() => setAdjustMode("set")}
                   >
-                    <Save className="mr-2 h-4 w-4" />
-                    Set Exact
+                    <Save className="mr-2 h-4 w-4" /> Set Exact
                   </Button>
                 </div>
               </div>
               {adjustMode === "add" || adjustMode === "subtract" ? (
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>Boxes to {adjustMode}</Label>
+                    <Label className="text-slate-300">Boxes to {adjustMode}</Label>
                     <Input
                       type="number"
                       min={0}
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       value={adjustBoxes}
                       onChange={(e) => setAdjustBoxes(Number(e.target.value) || 0)}
-                      className="font-mono bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                      className="bg-slate-800/50 border-slate-700 text-slate-200 font-mono"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Singles to {adjustMode}</Label>
+                    <Label className="text-slate-300">Singles to {adjustMode}</Label>
                     <Input
                       type="number"
                       min={0}
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       value={adjustSingles}
                       onChange={(e) => setAdjustSingles(Number(e.target.value) || 0)}
-                      className="font-mono bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                      className="bg-slate-800/50 border-slate-700 text-slate-200 font-mono"
                     />
                   </div>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>New Box Quantity</Label>
+                    <Label className="text-slate-300">New Box Quantity</Label>
                     <Input
                       type="number"
                       min={0}
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       value={adjustExactBoxes}
-                      onChange={(e) =>
-                        setAdjustExactBoxes(Number(e.target.value) || 0)
-                      }
-                      className="font-mono bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                      onChange={(e) => setAdjustExactBoxes(Number(e.target.value) || 0)}
+                      className="bg-slate-800/50 border-slate-700 text-slate-200 font-mono"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>New Single Quantity</Label>
+                    <Label className="text-slate-300">New Single Quantity</Label>
                     <Input
                       type="number"
                       min={0}
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       value={adjustExactSingles}
-                      onChange={(e) =>
-                        setAdjustExactSingles(Number(e.target.value) || 0)
-                      }
-                      className="font-mono bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                      onChange={(e) => setAdjustExactSingles(Number(e.target.value) || 0)}
+                      className="bg-slate-800/50 border-slate-700 text-slate-200 font-mono"
                     />
                   </div>
                 </div>
@@ -2079,14 +1554,14 @@ export default function StockPage(): JSX.Element {
               <Button
                 variant="outline"
                 onClick={() => setAdjustDialogOpen(false)}
-                className="border-slate-300 dark:border-slate-700"
+                className="border-slate-700 text-slate-300 hover:bg-slate-800"
               >
                 Cancel
               </Button>
               <Button
                 onClick={handleAdjustSubmit}
                 disabled={loading}
-                className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white"
+                className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white"
               >
                 Apply Adjustment
               </Button>
@@ -2096,29 +1571,28 @@ export default function StockPage(): JSX.Element {
 
         {/* Exchange Dialog */}
         <Dialog open={exchangeDialogOpen} onOpenChange={setExchangeDialogOpen}>
-          <DialogContent className="max-w-lg border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
+          <DialogContent className="max-w-lg border-0 bg-gradient-to-b from-slate-900 to-slate-950 shadow-2xl rounded-2xl">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent flex items-center gap-2">
-                <Repeat className="h-5 w-5" />
-                Product Exchange
+                <Repeat className="h-5 w-5" /> Product Exchange
               </DialogTitle>
-              <DialogDescription>
+              <DialogDescription className="text-slate-400">
                 Exchange products between inventory.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label>Source Product (giving away) *</Label>
+                <Label className="text-slate-300">Source Product (giving away) *</Label>
                 <Select
                   value={exchangeForm.sourceProductId}
                   onValueChange={(v) =>
                     setExchangeForm({ ...exchangeForm, sourceProductId: v })
                   }
                 >
-                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                  <SelectTrigger className="bg-slate-800/50 border-slate-700 text-slate-200">
                     <SelectValue placeholder="Select product to give" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="bg-slate-800 border-slate-700">
                     {products.map((p) => {
                       const stock = stocks.find((s) => s.productId === p.id);
                       const totalUnits = stock
@@ -2126,7 +1600,7 @@ export default function StockPage(): JSX.Element {
                         : 0;
                       return (
                         <SelectItem key={p.id} value={p.id}>
-                          {p.name} (Stock: {totalUnits} units)
+                          {p.name} (Stock: {formatInteger(totalUnits)} units)
                         </SelectItem>
                       );
                     })}
@@ -2134,7 +1608,7 @@ export default function StockPage(): JSX.Element {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Target Product (receiving) *</Label>
+                <Label className="text-slate-300">Target Product (receiving) *</Label>
                 <Select
                   value={exchangeForm.targetProductId}
                   onValueChange={(v) =>
@@ -2142,10 +1616,10 @@ export default function StockPage(): JSX.Element {
                   }
                   disabled={!exchangeForm.sourceProductId}
                 >
-                  <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                  <SelectTrigger className="bg-slate-800/50 border-slate-700 text-slate-200">
                     <SelectValue placeholder="Select product to receive" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="bg-slate-800 border-slate-700">
                     {products
                       .filter((p) => p.id !== exchangeForm.sourceProductId)
                       .map((p) => (
@@ -2158,27 +1632,29 @@ export default function StockPage(): JSX.Element {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>Exchange Type</Label>
+                  <Label className="text-slate-300">Exchange Type</Label>
                   <Select
                     value={exchangeForm.exchangeType}
                     onValueChange={(v: "box" | "single") =>
                       setExchangeForm({ ...exchangeForm, exchangeType: v })
                     }
                   >
-                    <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                    <SelectTrigger className="bg-slate-800/50 border-slate-700 text-slate-200">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="bg-slate-800 border-slate-700">
                       <SelectItem value="box">Boxes</SelectItem>
                       <SelectItem value="single">Singles</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label>Quantity</Label>
+                  <Label className="text-slate-300">Quantity</Label>
                   <Input
                     type="number"
                     min={1}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
                     value={exchangeForm.sourceQuantity}
                     onChange={(e) =>
                       setExchangeForm({
@@ -2186,24 +1662,24 @@ export default function StockPage(): JSX.Element {
                         sourceQuantity: Number(e.target.value) || 1,
                       })
                     }
-                    className="font-mono bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                    className="bg-slate-800/50 border-slate-700 text-slate-200 font-mono"
                   />
                 </div>
               </div>
               <div className="space-y-2">
-                <Label>Notes (optional)</Label>
+                <Label className="text-slate-300">Notes (optional)</Label>
                 <Input
                   placeholder="Exchange reason"
                   value={exchangeForm.notes}
                   onChange={(e) =>
                     setExchangeForm({ ...exchangeForm, notes: e.target.value })
                   }
-                  className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                  className="bg-slate-800/50 border-slate-700 text-slate-200"
                 />
               </div>
               {exchangeForm.sourceProductId && exchangeForm.targetProductId && (
-                <div className="rounded-xl bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-950/30 dark:to-pink-950/30 p-4 text-sm border border-purple-200 dark:border-purple-800">
-                  <p className="font-semibold mb-2 text-purple-700 dark:text-purple-300">
+                <div className="rounded-xl bg-gradient-to-r from-purple-900/20 to-pink-900/20 p-4 text-sm border border-purple-800/50">
+                  <p className="font-semibold mb-2 text-purple-300">
                     Exchange Preview:
                   </p>
                   {(() => {
@@ -2221,22 +1697,22 @@ export default function StockPage(): JSX.Element {
                     const targetBoxes = Math.floor(sourceUnits / target.unitsPerBox);
                     const targetSingles = sourceUnits % target.unitsPerBox;
                     return (
-                      <div className="space-y-1 text-muted-foreground">
+                      <div className="space-y-1 text-slate-300">
                         <p>
                           You give:{" "}
-                          <span className="font-medium text-foreground">
+                          <span className="font-medium text-white">
                             {exchangeForm.sourceQuantity}{" "}
                             {exchangeForm.exchangeType}(s) of {source.name}
                           </span>
                         </p>
                         <p>
                           You receive:{" "}
-                          <span className="font-medium text-foreground">
+                          <span className="font-medium text-white">
                             {targetBoxes} box(es) and {targetSingles} single(s) of{" "}
                             {target.name}
                           </span>
                         </p>
-                        <p className="text-xs">
+                        <p className="text-xs text-slate-400">
                           (Based on {source.unitsPerBox} units/box for source and{" "}
                           {target.unitsPerBox} for target)
                         </p>
@@ -2250,14 +1726,14 @@ export default function StockPage(): JSX.Element {
               <Button
                 variant="outline"
                 onClick={() => setExchangeDialogOpen(false)}
-                className="border-slate-300 dark:border-slate-700"
+                className="border-slate-700 text-slate-300 hover:bg-slate-800"
               >
                 Cancel
               </Button>
               <Button
                 onClick={handleExchange}
                 disabled={exchangeLoading}
-                className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white"
+                className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white"
               >
                 {exchangeLoading ? (
                   <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
@@ -2272,57 +1748,62 @@ export default function StockPage(): JSX.Element {
 
         {/* Stock History Dialog */}
         <Dialog open={stockHistoryDialogOpen} onOpenChange={setStockHistoryDialogOpen}>
-          <DialogContent className="max-w-3xl border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
+          <DialogContent className="min-w-4xl max-w-5xl border-0 bg-gradient-to-b from-slate-900 to-slate-950 shadow-2xl rounded-2xl">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
                 Stock History
               </DialogTitle>
-              <DialogDescription>
+              <DialogDescription className="text-slate-400">
                 {selectedStockForHistory?.product?.name} - Inventory change log
               </DialogDescription>
             </DialogHeader>
             <div className="max-h-96 overflow-y-auto">
               {historyLoading ? (
                 <div className="py-8 text-center">
-                  <RefreshCw className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
+                  <RefreshCw className="h-8 w-8 animate-spin mx-auto text-slate-400" />
                 </div>
               ) : stockHistoryRecords.length === 0 ? (
-                <p className="text-center text-muted-foreground py-8">
+                <p className="text-center text-slate-400 py-8">
                   No history records found.
                 </p>
               ) : (
                 <Table>
                   <TableHeader>
-                    <TableRow>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Action</TableHead>
-                      <TableHead>Boxes</TableHead>
-                      <TableHead>Singles</TableHead>
-                      <TableHead>Notes</TableHead>
+                    <TableRow className="border-slate-700">
+                      <TableHead className="text-slate-300">Date</TableHead>
+                      <TableHead className="text-slate-300">Action</TableHead>
+                      <TableHead className="text-slate-300">Boxes</TableHead>
+                      <TableHead className="text-slate-300">Singles</TableHead>
+                      <TableHead className="text-slate-300">Notes</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {stockHistoryRecords.map((record) => (
-                      <TableRow key={record.id}>
-                        <TableCell>
+                      <TableRow key={record.id} className="border-slate-800">
+                        <TableCell className="text-slate-300">
                           {new Date(record.createdAt).toLocaleString()}
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline" className="capitalize">
+                          <Badge
+                            variant="outline"
+                            className="capitalize bg-slate-800/50 text-slate-300 border-slate-700"
+                          >
                             {record.actionType}
                           </Badge>
                         </TableCell>
-                        <TableCell>
-                          {record.boxQuantityAfter} (
+                        <TableCell className="font-mono text-slate-300">
+                          {formatInteger(record.boxQuantityAfter)} (
                           {record.boxQuantityChange >= 0 ? "+" : ""}
-                          {record.boxQuantityChange})
+                          {formatInteger(record.boxQuantityChange)})
                         </TableCell>
-                        <TableCell>
-                          {record.singleQuantityAfter} (
+                        <TableCell className="font-mono text-slate-300">
+                          {formatInteger(record.singleQuantityAfter)} (
                           {record.singleQuantityChange >= 0 ? "+" : ""}
-                          {record.singleQuantityChange})
+                          {formatInteger(record.singleQuantityChange)})
                         </TableCell>
-                        <TableCell>{record.notes || "—"}</TableCell>
+                        <TableCell className="text-slate-400">
+                          {record.notes || "—"}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -2330,7 +1811,87 @@ export default function StockPage(): JSX.Element {
               )}
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setStockHistoryDialogOpen(false)}>
+              <Button
+                variant="outline"
+                onClick={() => setStockHistoryDialogOpen(false)}
+                className="border-slate-700 text-slate-300 hover:bg-slate-800"
+              >
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Price History Dialog */}
+        <Dialog open={priceHistoryDialogOpen} onOpenChange={setPriceHistoryDialogOpen}>
+          <DialogContent className="min-w-4xl max-w-5xl border-0 bg-gradient-to-b from-slate-900 to-slate-950 shadow-2xl rounded-2xl">
+            <DialogHeader>
+              <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                Price History
+              </DialogTitle>
+              <DialogDescription className="text-slate-400">
+                {selectedProductForHistory?.name} - Historical pricing records (active and ended)
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-96 overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-slate-700 bg-slate-800/50">
+                    <TableHead className="min-w-[110px] text-slate-300">Start Date</TableHead>
+                    <TableHead className="min-w-[110px] text-slate-300">End Date</TableHead>
+                    <TableHead className="min-w-[100px] text-slate-300">Buy/Box</TableHead>
+                    <TableHead className="min-w-[100px] text-slate-300">Sell/Box</TableHead>
+                    <TableHead className="min-w-[100px] text-slate-300">Sell/Unit</TableHead>
+                    <TableHead className="min-w-[90px] text-slate-300">Allow Loss</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {selectedProductForHistory?.prices?.map((price) => (
+                    <TableRow key={price.id} className="border-slate-800">
+                      <TableCell className="text-slate-300">
+                        {new Date(price.startAt).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell>
+                        {price.endAt ? (
+                          new Date(price.endAt).toLocaleDateString()
+                        ) : (
+                          <Badge className="bg-emerald-600">Active</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-slate-300">
+                        {formatNumber(price.buyPricePerBox)} {CURRENCY}
+                      </TableCell>
+                      <TableCell className="font-mono text-slate-300">
+                        {formatNumber(price.sellPricePerBox)} {CURRENCY}
+                      </TableCell>
+                      <TableCell className="font-mono text-slate-300">
+                        {formatNumber(price.sellPricePerUnit)} {CURRENCY}
+                      </TableCell>
+                      <TableCell>
+                        {price.allowLoss ? (
+                          <Badge variant="destructive">Yes</Badge>
+                        ) : (
+                          <Badge variant="outline">No</Badge>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {!selectedProductForHistory?.prices?.length && (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center text-slate-400">
+                        No price history available
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setPriceHistoryDialogOpen(false)}
+                className="border-slate-700 text-slate-300 hover:bg-slate-800"
+              >
                 Close
               </Button>
             </DialogFooter>
@@ -2339,47 +1900,59 @@ export default function StockPage(): JSX.Element {
 
         {/* Entity Management Dialog */}
         <Dialog open={entityDialogOpen} onOpenChange={setEntityDialogOpen}>
-          <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
+          <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto border-0 bg-gradient-to-b from-slate-900 to-slate-950 shadow-2xl rounded-2xl">
             <DialogHeader>
               <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
                 Quick Management
               </DialogTitle>
-              <DialogDescription>
-                Manage products, categories, brands, and packaging
+              <DialogDescription className="text-slate-400">
+                Manage products, price history, categories, brands, and packaging
               </DialogDescription>
             </DialogHeader>
             <Tabs
               value={activeEntityTab}
               onValueChange={(v) => {
-                setActiveEntityTab(v as typeof activeEntityTab);
+                setActiveEntityTab(v as any);
                 setEditingProductId(null);
                 setEditingEntityId(null);
                 setEntityForm({ name: "", type: "" });
                 setEntitySearch("");
+                setPriceListFilters((prev) => ({
+                  ...prev,
+                  page: 1,
+                  productId: undefined,
+                  active: undefined,
+                }));
               }}
             >
-              <TabsList className="grid w-full grid-cols-4 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
+              <TabsList className="grid w-full grid-cols-5 bg-slate-800/50 p-1 rounded-xl">
                 <TabsTrigger
                   value="products"
-                  className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-indigo-500 data-[state=active]:to-purple-500 data-[state=active]:text-white rounded-lg"
+                  className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-indigo-500 data-[state=active]:to-purple-500 data-[state=active]:text-white rounded-lg text-slate-300"
                 >
                   Products
                 </TabsTrigger>
                 <TabsTrigger
+                  value="prices"
+                  className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-emerald-500 data-[state=active]:to-teal-500 data-[state=active]:text-white rounded-lg text-slate-300"
+                >
+                  Price List
+                </TabsTrigger>
+                <TabsTrigger
                   value="category"
-                  className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-emerald-500 data-[state=active]:to-teal-500 data-[state=active]:text-white rounded-lg"
+                  className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-amber-500 data-[state=active]:to-orange-500 data-[state=active]:text-white rounded-lg text-slate-300"
                 >
                   Categories
                 </TabsTrigger>
                 <TabsTrigger
                   value="brand"
-                  className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-amber-500 data-[state=active]:to-orange-500 data-[state=active]:text-white rounded-lg"
+                  className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-rose-500 data-[state=active]:to-pink-500 data-[state=active]:text-white rounded-lg text-slate-300"
                 >
                   Brands
                 </TabsTrigger>
                 <TabsTrigger
                   value="packaging"
-                  className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-500 data-[state=active]:to-cyan-500 data-[state=active]:text-white rounded-lg"
+                  className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-500 data-[state=active]:to-cyan-500 data-[state=active]:text-white rounded-lg text-slate-300"
                 >
                   Packaging
                 </TabsTrigger>
@@ -2387,27 +1960,29 @@ export default function StockPage(): JSX.Element {
 
               {/* Products Tab */}
               <TabsContent value="products" className="space-y-4">
-                <div className="border-b pb-4 mb-4">
-                  <h4 className="font-semibold mb-3 text-indigo-700 dark:text-indigo-300">
+                <div className="border-b border-slate-700 pb-4 mb-4">
+                  <h4 className="font-semibold mb-3 text-indigo-300">
                     {editingProductId ? "Edit Product" : "Add New Product"}
                   </h4>
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="space-y-1">
-                      <Label>Name *</Label>
+                      <Label className="text-slate-300">Name *</Label>
                       <Input
                         value={productForm.name}
                         onChange={(e) =>
                           setProductForm({ ...productForm, name: e.target.value })
                         }
                         placeholder="Product name"
-                        className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        className="bg-slate-800/50 border-slate-700 text-slate-200"
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label>Units per Box</Label>
+                      <Label className="text-slate-300">Units per Box</Label>
                       <Input
                         type="number"
                         min={1}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
                         value={productForm.unitsPerBox}
                         onChange={(e) =>
                           setProductForm({
@@ -2415,11 +1990,11 @@ export default function StockPage(): JSX.Element {
                             unitsPerBox: Number(e.target.value) || 1,
                           })
                         }
-                        className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        className="bg-slate-800/50 border-slate-700 text-slate-200"
                       />
                     </div>
                     <div className="md:col-span-2 space-y-1">
-                      <Label>Description</Label>
+                      <Label className="text-slate-300">Description</Label>
                       <Input
                         value={productForm.description}
                         onChange={(e) =>
@@ -2429,21 +2004,21 @@ export default function StockPage(): JSX.Element {
                           })
                         }
                         placeholder="Optional description"
-                        className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        className="bg-slate-800/50 border-slate-700 text-slate-200"
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label>Category *</Label>
+                      <Label className="text-slate-300">Category *</Label>
                       <Select
                         value={productForm.categoryId}
                         onValueChange={(v) =>
                           setProductForm({ ...productForm, categoryId: v })
                         }
                       >
-                        <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                        <SelectTrigger className="bg-slate-800/50 border-slate-700 text-slate-200">
                           <SelectValue placeholder="Select" />
                         </SelectTrigger>
-                        <SelectContent>
+                        <SelectContent className="bg-slate-800 border-slate-700">
                           {categories.map((c) => (
                             <SelectItem key={c.id} value={c.id}>
                               {c.name}
@@ -2453,17 +2028,17 @@ export default function StockPage(): JSX.Element {
                       </Select>
                     </div>
                     <div className="space-y-1">
-                      <Label>Brand *</Label>
+                      <Label className="text-slate-300">Brand *</Label>
                       <Select
                         value={productForm.brandId}
                         onValueChange={(v) =>
                           setProductForm({ ...productForm, brandId: v })
                         }
                       >
-                        <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                        <SelectTrigger className="bg-slate-800/50 border-slate-700 text-slate-200">
                           <SelectValue placeholder="Select" />
                         </SelectTrigger>
-                        <SelectContent>
+                        <SelectContent className="bg-slate-800 border-slate-700">
                           {brands.map((b) => (
                             <SelectItem key={b.id} value={b.id}>
                               {b.name}
@@ -2473,17 +2048,17 @@ export default function StockPage(): JSX.Element {
                       </Select>
                     </div>
                     <div className="space-y-1">
-                      <Label>Packaging *</Label>
+                      <Label className="text-slate-300">Packaging *</Label>
                       <Select
                         value={productForm.packagingId}
                         onValueChange={(v) =>
                           setProductForm({ ...productForm, packagingId: v })
                         }
                       >
-                        <SelectTrigger className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                        <SelectTrigger className="bg-slate-800/50 border-slate-700 text-slate-200">
                           <SelectValue placeholder="Select" />
                         </SelectTrigger>
-                        <SelectContent>
+                        <SelectContent className="bg-slate-800 border-slate-700">
                           {packagings.map((p) => (
                             <SelectItem key={p.id} value={p.id}>
                               {p.name}
@@ -2493,10 +2068,11 @@ export default function StockPage(): JSX.Element {
                       </Select>
                     </div>
                     <div className="space-y-1">
-                      <Label>Box Buy Price ({CURRENCY})</Label>
+                      <Label className="text-slate-300">Box Buy Price ({CURRENCY})</Label>
                       <Input
                         type="number"
                         step="0.01"
+                        inputMode="decimal"
                         value={productForm.buyPricePerBox}
                         onChange={(e) =>
                           setProductForm({
@@ -2504,14 +2080,15 @@ export default function StockPage(): JSX.Element {
                             buyPricePerBox: e.target.value,
                           })
                         }
-                        className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        className="bg-slate-800/50 border-slate-700 text-slate-200"
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label>Box Sell Price ({CURRENCY})</Label>
+                      <Label className="text-slate-300">Box Sell Price ({CURRENCY})</Label>
                       <Input
                         type="number"
                         step="0.01"
+                        inputMode="decimal"
                         value={productForm.sellPricePerBox}
                         onChange={(e) =>
                           setProductForm({
@@ -2519,14 +2096,15 @@ export default function StockPage(): JSX.Element {
                             sellPricePerBox: e.target.value,
                           })
                         }
-                        className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        className="bg-slate-800/50 border-slate-700 text-slate-200"
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label>Single Sell Price ({CURRENCY})</Label>
+                      <Label className="text-slate-300">Single Sell Price ({CURRENCY})</Label>
                       <Input
                         type="number"
                         step="0.01"
+                        inputMode="decimal"
                         value={productForm.sellPricePerUnit}
                         onChange={(e) =>
                           setProductForm({
@@ -2534,7 +2112,7 @@ export default function StockPage(): JSX.Element {
                             sellPricePerUnit: e.target.value,
                           })
                         }
-                        className="bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        className="bg-slate-800/50 border-slate-700 text-slate-200"
                       />
                     </div>
                     <div className="flex items-center gap-2 col-span-2">
@@ -2544,17 +2122,21 @@ export default function StockPage(): JSX.Element {
                           setProductForm({ ...productForm, allowLoss: c })
                         }
                       />
-                      <Label>Allow Loss (sell below cost)</Label>
+                      <Label className="text-slate-300">Allow Loss (sell below cost)</Label>
                     </div>
                   </div>
                   <div className="flex justify-end gap-2 mt-4">
-                    <Button variant="outline" onClick={resetProductForm}>
+                    <Button
+                      variant="outline"
+                      onClick={resetProductForm}
+                      className="border-slate-700 text-slate-300 hover:bg-slate-800"
+                    >
                       Cancel
                     </Button>
                     <Button
                       onClick={handleProductSubmit}
                       disabled={loading}
-                      className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white"
+                      className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white"
                     >
                       {editingProductId ? "Update Product" : "Create Product"}
                     </Button>
@@ -2563,44 +2145,41 @@ export default function StockPage(): JSX.Element {
                 <div>
                   <div className="flex gap-2 mb-3">
                     <div className="relative flex-1">
-                      <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                      <Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
                       <Input
                         placeholder="Search products..."
                         value={entitySearch}
                         onChange={(e) => setEntitySearch(e.target.value)}
-                        className="pl-8 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                        className="pl-8 bg-slate-800/50 border-slate-700 text-slate-200"
                       />
                     </div>
                   </div>
                   <div className="max-h-64 space-y-2 overflow-y-auto">
                     {filteredProducts.map((product) => (
-                      <motion.div
+                      <div
                         key={product.id}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="flex items-center justify-between rounded-xl border-0 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm p-3 hover:shadow-md transition-shadow"
+                        className="flex items-center justify-between rounded-xl bg-slate-800/30 backdrop-blur-sm p-3 hover:bg-slate-700/30 transition-colors"
                       >
                         <div className="flex-1 min-w-0">
-                          <div className="font-medium text-indigo-700 dark:text-indigo-300 truncate">
+                          <div className="font-medium text-indigo-300 truncate">
                             {product.name}
                           </div>
-                          <div className="text-xs text-muted-foreground truncate">
+                          <div className="text-xs text-slate-400 truncate">
                             {getCategoryName(product.categoryId)} |{" "}
                             {getBrandName(product.brandId)} |{" "}
                             {getPackagingName(product.packagingId)}
                           </div>
-                          <div className="text-xs text-muted-foreground">
-                            Box: {Number(product.buyPricePerBox || 0).toFixed(2)} /{" "}
-                            {Number(product.sellPricePerBox || 0).toFixed(2)} {CURRENCY} |
-                            Single: {Number(product.sellPricePerUnit || 0).toFixed(2)}{" "}
-                            {CURRENCY}
+                          <div className="text-xs text-slate-400">
+                            Box: {formatNumber(product.buyPricePerBox || 0)} /{" "}
+                            {formatNumber(product.sellPricePerBox || 0)} {CURRENCY} |
+                            Single: {formatNumber(product.sellPricePerUnit || 0)} {CURRENCY}
                           </div>
                         </div>
                         <div className="flex gap-1">
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 hover:bg-indigo-100 dark:hover:bg-indigo-900/50"
+                            className="h-8 w-8 hover:bg-indigo-500/20 text-slate-300"
                             onClick={() => openProductForm(product)}
                           >
                             <Pencil className="h-4 w-4" />
@@ -2608,7 +2187,7 @@ export default function StockPage(): JSX.Element {
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 hover:bg-purple-100 dark:hover:bg-purple-900/50"
+                            className="h-8 w-8 hover:bg-purple-500/20 text-slate-300"
                             onClick={() => openPriceHistory(product)}
                           >
                             <Clock className="h-4 w-4" />
@@ -2616,16 +2195,16 @@ export default function StockPage(): JSX.Element {
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-destructive"
+                            className="h-8 w-8 hover:bg-rose-500/20 text-rose-400"
                             onClick={() => handleProductDelete(product.id)}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
-                      </motion.div>
+                      </div>
                     ))}
                     {filteredProducts.length === 0 && (
-                      <div className="py-4 text-center text-sm text-muted-foreground">
+                      <div className="py-4 text-center text-sm text-slate-400">
                         No products found
                       </div>
                     )}
@@ -2633,29 +2212,243 @@ export default function StockPage(): JSX.Element {
                 </div>
               </TabsContent>
 
+              {/* Price List Tab */}
+              <TabsContent value="prices" className="space-y-4">
+                <div className="flex flex-wrap gap-2 justify-between items-center">
+                  <div className="flex gap-2">
+                    <Select
+                      value={priceListFilters.productId || ""}
+                      onValueChange={(v) =>
+                        setPriceListFilters((prev) => ({
+                          ...prev,
+                          productId: v || undefined,
+                          page: 1,
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="w-48 bg-slate-800/50 border-slate-700 text-slate-200">
+                        <SelectValue placeholder="All Products" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-800 border-slate-700">
+                        <SelectItem value="">All Products</SelectItem>
+                        {products.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={
+                        priceListFilters.active === undefined
+                          ? ""
+                          : String(priceListFilters.active)
+                      }
+                      onValueChange={(v) => {
+                        if (v === "")
+                          setPriceListFilters((prev) => ({
+                            ...prev,
+                            active: undefined,
+                            page: 1,
+                          }));
+                        else
+                          setPriceListFilters((prev) => ({
+                            ...prev,
+                            active: v === "true",
+                            page: 1,
+                          }));
+                      }}
+                    >
+                      <SelectTrigger className="w-32 bg-slate-800/50 border-slate-700 text-slate-200">
+                        <SelectValue placeholder="Status" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-slate-800 border-slate-700">
+                        <SelectItem value="">All</SelectItem>
+                        <SelectItem value="true">Active</SelectItem>
+                        <SelectItem value="false">Ended</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setPriceListFilters((prev) => ({
+                        ...prev,
+                        page: 1,
+                        productId: undefined,
+                        active: undefined,
+                      }));
+                    }}
+                    className="border-slate-700 text-slate-300 hover:bg-slate-800"
+                  >
+                    <RefreshCw className="mr-2 h-3 w-3" /> Refresh
+                  </Button>
+                </div>
+                {priceListLoading ? (
+                  <div className="flex justify-center py-8">
+                    <RefreshCw className="h-6 w-6 animate-spin text-slate-400" />
+                  </div>
+                ) : priceListData.data.length === 0 ? (
+                  <div className="text-center py-8 text-slate-400">
+                    No price records found.
+                  </div>
+                ) : (
+                  <>
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="border-slate-700">
+                            <TableHead className="min-w-[150px] text-slate-300">
+                              Product
+                            </TableHead>
+                            <TableHead className="min-w-[100px] text-slate-300">
+                              Buy/Box
+                            </TableHead>
+                            <TableHead className="min-w-[100px] text-slate-300">
+                              Sell/Box
+                            </TableHead>
+                            <TableHead className="min-w-[100px] text-slate-300">
+                              Sell/Unit
+                            </TableHead>
+                            <TableHead className="min-w-[120px] text-slate-300">
+                              Start Date
+                            </TableHead>
+                            <TableHead className="min-w-[120px] text-slate-300">
+                              End Date
+                            </TableHead>
+                            <TableHead className="min-w-[90px] text-slate-300">
+                              Allow Loss
+                            </TableHead>
+                            <TableHead className="min-w-[100px] text-slate-300">
+                              Action
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {priceListData.data.map((price) => {
+                            const product = products.find(
+                              (p) => p.id === price.productId
+                            );
+                            return (
+                              <TableRow key={price.id} className="border-slate-800">
+                                <TableCell className="font-medium text-slate-200">
+                                  {product?.name || price.productId}
+                                </TableCell>
+                                <TableCell className="font-mono text-slate-300">
+                                  {formatNumber(price.buyPricePerBox)} {CURRENCY}
+                                </TableCell>
+                                <TableCell className="font-mono text-slate-300">
+                                  {formatNumber(price.sellPricePerBox)} {CURRENCY}
+                                </TableCell>
+                                <TableCell className="font-mono text-slate-300">
+                                  {formatNumber(price.sellPricePerUnit)} {CURRENCY}
+                                </TableCell>
+                                <TableCell className="text-slate-300">
+                                  {new Date(price.startAt).toLocaleDateString()}
+                                </TableCell>
+                                <TableCell>
+                                  {price.endAt ? (
+                                    new Date(price.endAt).toLocaleDateString()
+                                  ) : (
+                                    <Badge className="bg-emerald-600">Active</Badge>
+                                  )}
+                                </TableCell>
+                                <TableCell>
+                                  {price.allowLoss ? (
+                                    <Badge variant="destructive">Yes</Badge>
+                                  ) : (
+                                    <Badge variant="outline">No</Badge>
+                                  )}
+                                </TableCell>
+                                <TableCell>
+                                  {price.endAt !== null && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        handleActivatePrice(price.id, price.productId)
+                                      }
+                                      disabled={activatingPriceId === price.id}
+                                      className="border-slate-700 text-slate-300 hover:bg-slate-800"
+                                    >
+                                      {activatingPriceId === price.id ? (
+                                        <RefreshCw className="h-3 w-3 animate-spin mr-1" />
+                                      ) : (
+                                        <Zap className="h-3 w-3 mr-1" />
+                                      )}
+                                      Activate
+                                    </Button>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    <div className="flex justify-end gap-2 mt-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={priceListData.page <= 1}
+                        onClick={() =>
+                          setPriceListFilters((prev) => ({
+                            ...prev,
+                            page: prev.page - 1,
+                          }))
+                        }
+                        className="border-slate-700 text-slate-300 hover:bg-slate-800"
+                      >
+                        Previous
+                      </Button>
+                      <span className="text-sm py-1 px-2 text-slate-400">
+                        Page {priceListData.page} of {priceListData.totalPages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={priceListData.page >= priceListData.totalPages}
+                        onClick={() =>
+                          setPriceListFilters((prev) => ({
+                            ...prev,
+                            page: prev.page + 1,
+                          }))
+                        }
+                        className="border-slate-700 text-slate-300 hover:bg-slate-800"
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </TabsContent>
+
               {/* Categories Tab */}
               <TabsContent value="category" className="space-y-4">
                 <div className="relative">
-                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
                   <Input
                     placeholder="Search categories..."
                     value={entitySearch}
                     onChange={(e) => setEntitySearch(e.target.value)}
-                    className="pl-8 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                    className="pl-8 bg-slate-800/50 border-slate-700 text-slate-200"
                   />
                 </div>
                 <div className="max-h-80 space-y-1 overflow-y-auto">
                   {filteredCategories.map((cat) => (
                     <div
                       key={cat.id}
-                      className="flex items-center justify-between rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm px-3 py-2"
+                      className="flex items-center justify-between rounded-xl bg-slate-800/30 backdrop-blur-sm px-3 py-2"
                     >
-                      <span className="capitalize font-medium">{cat.name}</span>
+                      <span className="capitalize font-medium text-slate-200">
+                        {cat.name}
+                      </span>
                       <div className="flex gap-1">
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7"
+                          className="h-7 w-7 hover:bg-amber-500/20 text-slate-300"
                           onClick={() => handleEditEntity(cat)}
                         >
                           <Pencil className="h-3 w-3" />
@@ -2663,7 +2456,7 @@ export default function StockPage(): JSX.Element {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7 text-destructive"
+                          className="h-7 w-7 hover:bg-rose-500/20 text-rose-400"
                           onClick={() => handleDeleteEntity(cat.id)}
                         >
                           <Trash2 className="h-3 w-3" />
@@ -2672,13 +2465,15 @@ export default function StockPage(): JSX.Element {
                     </div>
                   ))}
                   {filteredCategories.length === 0 && (
-                    <div className="py-4 text-center text-sm text-muted-foreground">
+                    <div className="py-4 text-center text-sm text-slate-400">
                       No categories found
                     </div>
                   )}
                 </div>
-                <div className="border-t pt-4">
-                  <Label>{editingEntityId ? "Edit" : "Add"} Category</Label>
+                <div className="border-t border-slate-700 pt-4">
+                  <Label className="text-slate-300">
+                    {editingEntityId ? "Edit" : "Add"} Category
+                  </Label>
                   <div className="mt-2 flex gap-2">
                     <Input
                       placeholder="Name"
@@ -2686,12 +2481,12 @@ export default function StockPage(): JSX.Element {
                       onChange={(e) =>
                         setEntityForm({ ...entityForm, name: e.target.value })
                       }
-                      className="flex-1 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                      className="flex-1 bg-slate-800/50 border-slate-700 text-slate-200"
                     />
                     <Button
                       onClick={handleEntitySubmit}
                       disabled={loading}
-                      className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white"
+                      className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white"
                     >
                       {editingEntityId ? "Update" : "Add"}
                     </Button>
@@ -2702,6 +2497,7 @@ export default function StockPage(): JSX.Element {
                           setEditingEntityId(null);
                           setEntityForm({ name: "", type: "" });
                         }}
+                        className="text-slate-300 hover:bg-slate-800"
                       >
                         Cancel
                       </Button>
@@ -2713,26 +2509,28 @@ export default function StockPage(): JSX.Element {
               {/* Brands Tab */}
               <TabsContent value="brand" className="space-y-4">
                 <div className="relative">
-                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
                   <Input
                     placeholder="Search brands..."
                     value={entitySearch}
                     onChange={(e) => setEntitySearch(e.target.value)}
-                    className="pl-8 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                    className="pl-8 bg-slate-800/50 border-slate-700 text-slate-200"
                   />
                 </div>
                 <div className="max-h-80 space-y-1 overflow-y-auto">
                   {filteredBrands.map((brand) => (
                     <div
                       key={brand.id}
-                      className="flex items-center justify-between rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm px-3 py-2"
+                      className="flex items-center justify-between rounded-xl bg-slate-800/30 backdrop-blur-sm px-3 py-2"
                     >
-                      <span className="capitalize font-medium">{brand.name}</span>
+                      <span className="capitalize font-medium text-slate-200">
+                        {brand.name}
+                      </span>
                       <div className="flex gap-1">
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7"
+                          className="h-7 w-7 hover:bg-amber-500/20 text-slate-300"
                           onClick={() => handleEditEntity(brand)}
                         >
                           <Pencil className="h-3 w-3" />
@@ -2740,7 +2538,7 @@ export default function StockPage(): JSX.Element {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7 text-destructive"
+                          className="h-7 w-7 hover:bg-rose-500/20 text-rose-400"
                           onClick={() => handleDeleteEntity(brand.id)}
                         >
                           <Trash2 className="h-3 w-3" />
@@ -2749,13 +2547,15 @@ export default function StockPage(): JSX.Element {
                     </div>
                   ))}
                   {filteredBrands.length === 0 && (
-                    <div className="py-4 text-center text-sm text-muted-foreground">
+                    <div className="py-4 text-center text-sm text-slate-400">
                       No brands found
                     </div>
                   )}
                 </div>
-                <div className="border-t pt-4">
-                  <Label>{editingEntityId ? "Edit" : "Add"} Brand</Label>
+                <div className="border-t border-slate-700 pt-4">
+                  <Label className="text-slate-300">
+                    {editingEntityId ? "Edit" : "Add"} Brand
+                  </Label>
                   <div className="mt-2 flex gap-2">
                     <Input
                       placeholder="Name"
@@ -2763,12 +2563,12 @@ export default function StockPage(): JSX.Element {
                       onChange={(e) =>
                         setEntityForm({ ...entityForm, name: e.target.value })
                       }
-                      className="flex-1 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                      className="flex-1 bg-slate-800/50 border-slate-700 text-slate-200"
                     />
                     <Button
                       onClick={handleEntitySubmit}
                       disabled={loading}
-                      className="bg-gradient-to-r from-amber-600 to-orange-600 text-white"
+                      className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white"
                     >
                       {editingEntityId ? "Update" : "Add"}
                     </Button>
@@ -2779,6 +2579,7 @@ export default function StockPage(): JSX.Element {
                           setEditingEntityId(null);
                           setEntityForm({ name: "", type: "" });
                         }}
+                        className="text-slate-300 hover:bg-slate-800"
                       >
                         Cancel
                       </Button>
@@ -2790,26 +2591,28 @@ export default function StockPage(): JSX.Element {
               {/* Packaging Tab */}
               <TabsContent value="packaging" className="space-y-4">
                 <div className="relative">
-                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
                   <Input
                     placeholder="Search packaging..."
                     value={entitySearch}
                     onChange={(e) => setEntitySearch(e.target.value)}
-                    className="pl-8 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
+                    className="pl-8 bg-slate-800/50 border-slate-700 text-slate-200"
                   />
                 </div>
                 <div className="max-h-80 space-y-1 overflow-y-auto">
                   {filteredPackagings.map((pkg) => (
                     <div
                       key={pkg.id}
-                      className="flex items-center justify-between rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm px-3 py-2"
+                      className="flex items-center justify-between rounded-xl bg-slate-800/30 backdrop-blur-sm px-3 py-2"
                     >
-                      <span className="capitalize font-medium">{pkg.name}</span>
+                      <span className="capitalize font-medium text-slate-200">
+                        {pkg.name}
+                      </span>
                       <div className="flex gap-1">
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7"
+                          className="h-7 w-7 hover:bg-blue-500/20 text-slate-300"
                           onClick={() => handleEditEntity(pkg)}
                         >
                           <Pencil className="h-3 w-3" />
@@ -2817,7 +2620,7 @@ export default function StockPage(): JSX.Element {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7 text-destructive"
+                          className="h-7 w-7 hover:bg-rose-500/20 text-rose-400"
                           onClick={() => handleDeleteEntity(pkg.id)}
                         >
                           <Trash2 className="h-3 w-3" />
@@ -2826,24 +2629,24 @@ export default function StockPage(): JSX.Element {
                     </div>
                   ))}
                   {filteredPackagings.length === 0 && (
-                    <div className="py-4 text-center text-sm text-muted-foreground">
+                    <div className="py-4 text-center text-sm text-slate-400">
                       No packaging types found
                     </div>
                   )}
                 </div>
-                <div className="border-t pt-4">
-                  <Label>{editingEntityId ? "Edit" : "Add"} Packaging</Label>
+                <div className="border-t border-slate-700 pt-4">
+                  <Label className="text-slate-300">
+                    {editingEntityId ? "Edit" : "Add"} Packaging
+                  </Label>
                   <div className="mt-2 flex gap-2">
                     <Select
                       value={entityForm.type}
-                      onValueChange={(v) =>
-                        setEntityForm({ ...entityForm, type: v })
-                      }
+                      onValueChange={(v) => setEntityForm({ ...entityForm, type: v })}
                     >
-                      <SelectTrigger className="flex-1 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                      <SelectTrigger className="flex-1 bg-slate-800/50 border-slate-700 text-slate-200">
                         <SelectValue placeholder="Select type" />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="bg-slate-800 border-slate-700">
                         <SelectItem value="bottle">Bottle</SelectItem>
                         <SelectItem value="can">Can</SelectItem>
                         <SelectItem value="plastic">Plastic</SelectItem>
@@ -2852,7 +2655,7 @@ export default function StockPage(): JSX.Element {
                     <Button
                       onClick={handleEntitySubmit}
                       disabled={loading}
-                      className="bg-gradient-to-r from-blue-600 to-cyan-600 text-white"
+                      className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white"
                     >
                       {editingEntityId ? "Update" : "Add"}
                     </Button>
@@ -2863,6 +2666,7 @@ export default function StockPage(): JSX.Element {
                           setEditingEntityId(null);
                           setEntityForm({ name: "", type: "" });
                         }}
+                        className="text-slate-300 hover:bg-slate-800"
                       >
                         Cancel
                       </Button>
@@ -2871,76 +2675,6 @@ export default function StockPage(): JSX.Element {
                 </div>
               </TabsContent>
             </Tabs>
-          </DialogContent>
-        </Dialog>
-
-        {/* Price History Dialog */}
-        <Dialog open={priceHistoryDialogOpen} onOpenChange={setPriceHistoryDialogOpen}>
-          <DialogContent className="max-w-2xl border-0 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 shadow-2xl">
-            <DialogHeader>
-              <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
-                Price History
-              </DialogTitle>
-              <DialogDescription>
-                {selectedProductForHistory?.name} - Historical pricing records
-              </DialogDescription>
-            </DialogHeader>
-            <div className="max-h-96 overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-slate-100 dark:bg-slate-800">
-                    <TableHead>Start Date</TableHead>
-                    <TableHead>End Date</TableHead>
-                    <TableHead>Buy/Box</TableHead>
-                    <TableHead>Sell/Box</TableHead>
-                    <TableHead>Sell/Unit</TableHead>
-                    <TableHead>Allow Loss</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {selectedProductForHistory?.prices?.map((price) => (
-                    <TableRow key={price.id}>
-                      <TableCell>
-                        {new Date(price.startAt).toLocaleDateString()}
-                      </TableCell>
-                      <TableCell>
-                        {price.endAt
-                          ? new Date(price.endAt).toLocaleDateString()
-                          : "Current"}
-                      </TableCell>
-                      <TableCell>
-                        {(Number(price.buyPricePerBox) ?? 0).toFixed(2)} {CURRENCY}
-                      </TableCell>
-                      <TableCell>
-                        {(Number(price.sellPricePerBox) ?? 0).toFixed(2)} {CURRENCY}
-                      </TableCell>
-                      <TableCell>
-                        {(Number(price.sellPricePerUnit) ?? 0).toFixed(2)} {CURRENCY}
-                      </TableCell>
-                      <TableCell>
-                        {price.allowLoss ? (
-                          <Badge className="bg-rose-500 text-white">Yes</Badge>
-                        ) : (
-                          <Badge variant="outline">No</Badge>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {!selectedProductForHistory?.prices?.length && (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center">
-                        No price history available
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setPriceHistoryDialogOpen(false)}>
-                Close
-              </Button>
-            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
