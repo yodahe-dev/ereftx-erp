@@ -1,31 +1,22 @@
-"use client";
+'use client';
 
-import React, { useEffect, useState } from "react";
-import { motion } from "framer-motion";
-import { api } from "@/lib/api";
-import { Card, CardContent } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Package2, RefreshCw, BarChart3 } from "lucide-react";
-import { toast } from "sonner";
-import { BarChartComponent } from "@/components/charts/BarChartComponent";
-import { StackedBarChartComponent } from "@/components/charts/StackedBarChartComponent";
+import { useState, useEffect } from 'react';
+import { motion } from 'framer-motion';
+import { api } from '@/lib/api';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Button } from '@/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Package2, RefreshCw, Beer } from 'lucide-react';
+import { toast } from 'sonner';
+import { ReusableChart } from '@/components/charts/ReusableChart';
 
 // ==================== TYPES ====================
-interface ProductFrequency {
-  productId: string;
-  productName: string;
-  value: number;
-}
-
-interface CategoryFrequency {
-  categoryId: string;
-  categoryName: string;
-  products: ProductFrequency[];
-}
-
 interface ProductQuantity {
   productId: string;
   productName: string;
@@ -39,25 +30,82 @@ interface CategoryQuantity {
   products: ProductQuantity[];
 }
 
-// ==================== MAIN COMPONENT ====================
-export default function StockAnalyticsPage() {
+type ChartType = 'bar' | 'line' | 'area' | 'stacked' | 'pie';
+
+// ==================== KPI CARD ====================
+function KpiCard({ label, value, prefix = '', suffix = '', color = '#3B82F6' }: {
+  label: string;
+  value: number;
+  prefix?: string;
+  suffix?: string;
+  color?: string;
+}) {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let start = 0;
+    const duration = 1000;
+    const step = Math.ceil(value / (duration / 16));
+    const timer = setInterval(() => {
+      start += step;
+      if (start >= value) {
+        setCount(value);
+        clearInterval(timer);
+      } else {
+        setCount(start);
+      }
+    }, 16);
+    return () => clearInterval(timer);
+  }, [value]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="relative group"
+    >
+      <div className="absolute inset-0 bg-gradient-to-r from-white/5 to-transparent rounded-xl blur-xl group-hover:blur-2xl transition-all duration-300" />
+      <div className="relative backdrop-blur-xl bg-white/5 rounded-xl border border-white/10 p-4 hover:border-white/20 transition-all duration-300 hover:shadow-2xl">
+        <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">{label}</p>
+        <p className="text-2xl font-bold" style={{ color }}>
+          {prefix}{count.toLocaleString()}{suffix}
+        </p>
+        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-current to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" style={{ color }} />
+      </div>
+    </motion.div>
+  );
+}
+
+// ==================== DASHBOARD – ONLY ALCOHOL (የአልኮል) ====================
+export default function DashboardHomePage() {
   const [loading, setLoading] = useState(true);
-  const [activeView, setActiveView] = useState<"frequency" | "quantity">("frequency");
-  const [frequencyData, setFrequencyData] = useState<CategoryFrequency[]>([]);
-  const [quantityData, setQuantityData] = useState<CategoryQuantity[]>([]);
+  const [chartType, setChartType] = useState<ChartType>('bar');
+  const [alcoholCategory, setAlcoholCategory] = useState<CategoryQuantity | null>(null);
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [freqRes, quantRes] = await Promise.all([
-        api.get("/analytics/stock/restock-frequency"),
-        api.get("/analytics/stock/restock-quantity-details"),
-      ]);
-      setFrequencyData(freqRes.data.data);
-      setQuantityData(quantRes.data.data);
+      const res = await api.get('/analytics/stock/restock-quantity-details');
+      const allData: CategoryQuantity[] = res.data.data;
+
+      // Find the alcohol category by ID (exact) OR by name containing "alcohol" or "የአልኮል" (case-insensitive)
+      const found = allData.find(
+        cat => 
+          cat.categoryId === '1986acd7-c2af-4381-b1f0-5c19da7b99e3' ||
+          cat.categoryName.toLowerCase().includes('alcohol') ||
+          cat.categoryName.includes('የአልኮል')
+      );
+      
+      if (found) {
+        setAlcoholCategory(found);
+        toast.success(`Found category: ${found.categoryName}`);
+      } else {
+        toast.error('Alcohol category not found. Check category name or ID.');
+        setAlcoholCategory(null);
+      }
     } catch (err) {
       console.error(err);
-      toast.error("Failed to load analytics data");
+      toast.error('Failed to load alcohol quantity data');
     } finally {
       setLoading(false);
     }
@@ -67,154 +115,138 @@ export default function StockAnalyticsPage() {
     fetchData();
   }, []);
 
-  const activeData = activeView === "frequency" ? frequencyData : quantityData;
-  const totalCategories = activeData.length;
-  const totalProducts = activeData.reduce((sum, cat) => sum + cat.products.length, 0);
-  const totalValue =
-    activeView === "frequency"
-      ? frequencyData.reduce((sum, cat) => sum + cat.products.reduce((s, p) => s + p.value, 0), 0)
-      : quantityData.reduce(
-          (sum, cat) =>
-            sum +
-            cat.products.reduce((s, p) => s + p.totalBoxesRestocked + p.totalSinglesRestocked, 0),
-          0
-        );
-
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-950 via-black to-gray-950 p-8">
-        <div className="mx-auto max-w-7xl space-y-6">
-          <Skeleton className="h-12 w-64 bg-white/10" />
-          <Skeleton className="h-[400px] w-full rounded-2xl bg-white/10" />
-          <div className="grid gap-6 md:grid-cols-2">
-            <Skeleton className="h-80 rounded-2xl bg-white/10" />
-            <Skeleton className="h-80 rounded-2xl bg-white/10" />
-          </div>
+      <div className="w-full space-y-6">
+        <Skeleton className="h-12 w-64 bg-white/10" />
+        <div className="grid gap-4 md:grid-cols-3">
+          {[1,2,3].map(i => <Skeleton key={i} className="h-32 rounded-xl bg-white/10" />)}
         </div>
+        <Skeleton className="h-[400px] w-full rounded-2xl bg-white/10" />
       </div>
     );
   }
 
+  if (!alcoholCategory) {
+    return (
+      <div className="text-center py-20">
+        <Beer className="h-16 w-16 mx-auto text-gray-500 mb-4" />
+        <p className="text-gray-400">የአልኮል ምድብ አልተገኘም</p>
+        <p className="text-sm text-gray-500 mt-2">Alcohol category not found in the data.</p>
+        <Button variant="outline" onClick={fetchData} className="mt-4">
+          <RefreshCw className="mr-2 h-4 w-4" /> ዳግም ሞክር
+        </Button>
+      </div>
+    );
+  }
+
+  // Prepare product data for the chart
+  const chartData = alcoholCategory.products.map(p => ({
+    name: p.productName.length > 18 ? p.productName.slice(0, 18) + '…' : p.productName,
+    fullName: p.productName,
+    Boxes: p.totalBoxesRestocked,
+    Bottles: p.totalSinglesRestocked,
+  }));
+
+  const totalProducts = alcoholCategory.products.length;
+  const totalBoxes = chartData.reduce((sum, p) => sum + p.Boxes, 0);
+  const totalBottles = chartData.reduce((sum, p) => sum + p.Bottles, 0);
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 lg:p-8">
-      <div className="mx-auto max-w-7xl space-y-10">
-        {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex flex-wrap gap-4 items-center justify-between"
-        >
-          <div>
-            <h1 className="text-5xl font-black bg-gradient-to-r from-amber-400 via-rose-400 to-emerald-400 bg-clip-text text-transparent">
-              Stock Analytics
-            </h1>
-            <p className="text-gray-400 mt-2 flex items-center gap-2">
-              <Package2 className="h-4 w-4" /> Real restock data • Box vs Bottle
-            </p>
-          </div>
-          <div className="flex gap-3">
-            <Tabs value={activeView} onValueChange={(v) => setActiveView(v as "frequency" | "quantity")}>
-              <TabsList className="bg-white/10 backdrop-blur-md border border-white/20">
-                <TabsTrigger value="frequency" className="data-[state=active]:bg-amber-500/20">
-                  📈 Frequency
-                </TabsTrigger>
-                <TabsTrigger value="quantity" className="data-[state=active]:bg-rose-500/20">
-                  📦 Quantity
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-            <Button variant="outline" onClick={fetchData} className="border-white/20 hover:bg-white/10">
-              <RefreshCw className="mr-2 h-4 w-4" /> Sync
-            </Button>
-          </div>
-        </motion.div>
+    <div className="relative w-full space-y-10">
+      {/* Header */}
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex flex-wrap gap-4 items-center justify-between"
+      >
+        <div>
+          <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-amber-400 to-red-400 bg-clip-text text-transparent">
+            {alcoholCategory.categoryName} • የአልኮል ትንተና
+          </h1>
+          <p className="text-gray-400 mt-2 flex items-center gap-2">
+            <Package2 className="h-4 w-4" /> Quantity only • Boxes vs Bottles
+          </p>
+        </div>
+        <div className="flex gap-3 items-center">
+          <Select value={chartType} onValueChange={(v) => setChartType(v as ChartType)}>
+            <SelectTrigger className="w-[140px] bg-white/10 border-white/20 text-white">
+              <SelectValue placeholder="Chart type" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="bar">📊 Bar Chart</SelectItem>
+              <SelectItem value="line">📈 Line Chart</SelectItem>
+              <SelectItem value="area">📉 Area Chart</SelectItem>
+              <SelectItem value="stacked">📚 Stacked Bar</SelectItem>
+              <SelectItem value="pie">🥧 Pie Chart</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="outline" onClick={fetchData} className="border-white/20 hover:bg-white/10 text-white">
+            <RefreshCw className="mr-2 h-4 w-4" /> Refresh
+          </Button>
+        </div>
+      </motion.div>
 
-        {/* KPI Cards with vibrant gradients */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="grid gap-4 md:grid-cols-3"
-        >
-          <Card className="bg-gradient-to-br from-amber-500/10 to-amber-600/5 border-amber-500/30 backdrop-blur-sm">
-            <CardContent className="pt-6">
-              <p className="text-sm text-amber-300">Categories</p>
-              <p className="text-3xl font-bold text-amber-400">{totalCategories}</p>
-            </CardContent>
-          </Card>
-          <Card className="bg-gradient-to-br from-rose-500/10 to-rose-600/5 border-rose-500/30 backdrop-blur-sm">
-            <CardContent className="pt-6">
-              <p className="text-sm text-rose-300">Active Products</p>
-              <p className="text-3xl font-bold text-rose-400">{totalProducts}</p>
-            </CardContent>
-          </Card>
-          <Card className="bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border-emerald-500/30 backdrop-blur-sm">
-            <CardContent className="pt-6">
-              <p className="text-sm text-emerald-300">
-                Total {activeView === "frequency" ? "Restocks" : "Units"}
-              </p>
-              <p className="text-3xl font-bold text-emerald-400">{totalValue.toLocaleString()}</p>
-            </CardContent>
-          </Card>
-        </motion.div>
+      {/* KPI Cards for Alcohol only */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="grid gap-4 md:grid-cols-3"
+      >
+        <KpiCard label="የምርቶች ብዛት • Products" value={totalProducts} color="#F59E0B" />
+        <KpiCard label="ጠቅላላ ሳጥኖች • Boxes" value={totalBoxes} color="#EF4444" />
+        <KpiCard label="ጠቅላላ ጠርሙሶች • Bottles" value={totalBottles} color="#10B981" />
+      </motion.div>
 
-        {/* Per‑Category Charts Grid */}
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="flex items-center gap-2 mb-6">
-            <BarChart3 className="h-5 w-5 text-amber-400" />
-            <h2 className="text-2xl font-semibold">Category Breakdown</h2>
-            <Badge variant="outline" className="bg-white/5 border-white/20">
-              {activeData.length} categories
-            </Badge>
-          </div>
-          <div className="grid gap-8 lg:grid-cols-2">
-            {activeData.map((category, idx) => {
-              if (activeView === "frequency") {
-                const freqCategory = category as CategoryFrequency;
-                const freqData = freqCategory.products.map((p) => ({
-                  name:
-                    p.productName.length > 18 ? p.productName.slice(0, 18) + "…" : p.productName,
-                  fullName: p.productName,
-                  value: p.value,
-                }));
-                // Cycle gradient colors: amber, rose, emerald, cyan, violet
-                const gradients = [
-                  { start: "#f59e0b", end: "#fbbf24" }, // amber
-                  { start: "#f43f5e", end: "#fda4af" }, // rose
-                  { start: "#10b981", end: "#34d399" }, // emerald
-                  { start: "#06b6d4", end: "#67e8f9" }, // cyan
-                  { start: "#8b5cf6", end: "#c084fc" }, // violet
-                ];
-                const { start, end } = gradients[idx % gradients.length];
-                return (
-                  <BarChartComponent
-                    key={category.categoryId}
-                    title={category.categoryName}
-                    data={freqData}
-                    dataKey="value"
-                    colorStart={start}
-                    colorEnd={end}
-                  />
-                );
-              } else {
-                const quantCategory = category as CategoryQuantity;
-                const quantData = quantCategory.products.map((p) => ({
-                  name:
-                    p.productName.length > 18 ? p.productName.slice(0, 18) + "…" : p.productName,
-                  fullName: p.productName,
-                  Boxes: p.totalBoxesRestocked,
-                  Bottles: p.totalSinglesRestocked,
-                }));
-                return (
-                  <StackedBarChartComponent
-                    key={quantCategory.categoryId}
-                    title={quantCategory.categoryName}
-                    data={quantData}
-                  />
-                );
-              }
-            })}
-          </div>
-        </motion.div>
+      {/* Single Chart for the Alcohol Category */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex items-center gap-2"
+      >
+        <Beer className="h-5 w-5 text-amber-400" />
+        <h2 className="text-2xl font-semibold text-white">
+          {alcoholCategory.categoryName} – ምርቶች ስብራት (Products Breakdown)
+        </h2>
+      </motion.div>
+
+      <div className="w-full">
+        {chartType === 'stacked' ? (
+          <ReusableChart
+            title=""
+            data={chartData}
+            dataKey="Boxes"
+            secondaryDataKey="Bottles"
+            chartType="stacked"
+            colorStart="#F59E0B"
+            colorEnd="#EF4444"
+            height={450}
+          />
+        ) : chartType === 'pie' ? (
+          <ReusableChart
+            title=""
+            data={[
+              { name: 'Boxes', value: totalBoxes, color: '#F59E0B' },
+              { name: 'Bottles', value: totalBottles, color: '#EF4444' },
+            ]}
+            dataKey="value"
+            chartType="pie"
+            colorStart="#F59E0B"
+            colorEnd="#EF4444"
+            height={400}
+          />
+        ) : (
+          <ReusableChart
+            title=""
+            data={chartData}
+            dataKey="Boxes"
+            secondaryDataKey="Bottles"
+            chartType={chartType}
+            colorStart="#F59E0B"
+            colorEnd="#EF4444"
+            height={450}
+          />
+        )}
       </div>
     </div>
   );
