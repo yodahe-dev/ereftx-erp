@@ -329,7 +329,7 @@ export default function StockPage(): JSX.Element {
 
   return (
     <TooltipProvider>
-      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6 md:p-8 lg:p-10 space-y-8">
+      <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
         {/* Header */}
         <motion.div
           initial="hidden"
@@ -388,7 +388,7 @@ export default function StockPage(): JSX.Element {
                 <motion.div
                   key={idx}
                   variants={fadeInUp}
-                  whileHover={cardHover}
+                  whileHover={{ scale: 1.02, transition: { type: "spring", stiffness: 300 } } as any}
                   className="relative"
                 >
                   <Card
