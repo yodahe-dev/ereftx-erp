@@ -456,7 +456,7 @@ export default function ExpensesPage() {
   };
 
   // ══════════════════════════════════════════════════════════════
-  //  FIXED: CREATE EXPENSE WITH TIMEOUT AND DETAILED LOGGING
+  //  FIXED: CREATE EXPENSE WITH SAFETY TIMER
   // ══════════════════════════════════════════════════════════════
   const handleCreateExpense = async () => {
     // ── Validation ──
@@ -475,8 +475,14 @@ export default function ExpensesPage() {
 
     // ── Set loading state ──
     setIsCreatingExpense(true);
-    const idempotencyKey = getIdempotencyKey();
 
+    // ── SAFETY NET: force reset after 60 seconds (in case promise never resolves) ──
+    let safetyTimer: NodeJS.Timeout | null = setTimeout(() => {
+      setIsCreatingExpense(false);
+      toast.error("Request timed out after 60 seconds", { position: "bottom-left" });
+    }, 60000);
+
+    const idempotencyKey = getIdempotencyKey();
     const payload = {
       title: expenseForm.title.trim(),
       amount: parseFloat(expenseForm.amount),
@@ -490,20 +496,20 @@ export default function ExpensesPage() {
     console.log("📤 Idempotency-Key:", idempotencyKey);
 
     try {
-      // ── Make the request with a 30-second timeout ──
       const res = await api.post("/expenses", payload, {
         headers: { "Idempotency-Key": idempotencyKey },
         timeout: 30000, // 30 seconds
       });
 
+      clearTimeout(safetyTimer); // success, cancel safety
       console.log("✅ Expense created:", res.data);
       toast.success("Expense created", { position: "bottom-left" });
       setExpenseDialogOpen(false);
       resetExpenseForm();
       await fetchExpenses();
     } catch (err: any) {
+      clearTimeout(safetyTimer); // error, cancel safety
       console.error("❌ Create expense error (full):", err);
-      // Check if it's a timeout
       if (err.code === "ECONNABORTED" || err.message.includes("timeout")) {
         toast.error("Request timed out – server took too long to respond", { position: "bottom-left" });
       } else {
@@ -511,7 +517,9 @@ export default function ExpensesPage() {
       }
     } finally {
       // ── ALWAYS reset loading state ──
+      if (safetyTimer) clearTimeout(safetyTimer); // extra safety
       setIsCreatingExpense(false);
+      console.log("🔄 Loading state reset to false");
     }
   };
 
