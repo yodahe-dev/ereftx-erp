@@ -21,6 +21,8 @@ export interface PriceLayer {
   buyPricePerBox: number;
   sellPricePerBox: number;
   sellPricePerUnit: number;
+  startAt: string;
+  endAt: string | null;
   boxQuantity: number;
   singleQuantity: number;
   totalUnits: number;
@@ -85,29 +87,13 @@ export interface StockHistoryRecord {
   singleQuantityChange: number;
   notes: string | null;
   isFree: boolean;
+  priceId?: string | null;
   createdAt: string;
-}
-
-export interface PriceListFilters {
-  productId?: string;
-  active?: boolean;
-  page: number;
-  limit: number;
-  sortBy: string;
-  sortOrder: "ASC" | "DESC";
-}
-
-export interface PriceListResponse {
-  data: ProductPrice[];
-  total: number;
-  page: number;
-  totalPages: number;
-  limit: number;
 }
 
 export type AdjustmentMode = "add" | "subtract" | "set";
 export type FilterType = "all" | "box" | "single";
-export type RestockPriceOption = "keep" | "existing" | "new";
+export type RestockPriceOption = "keep" | "existing";
 
 // ==================== CONSTANTS ====================
 const STORAGE_FILTER_KEY = "stock-filter-preference";
@@ -115,7 +101,6 @@ const STORAGE_PINNED_FILTER_KEY = "stock-pinned-filter";
 const PRODUCTS_PAGE_LIMIT = 1000;
 const DEFAULT_UNITS_PER_BOX = 24;
 export const CURRENCY = "ETB";
-const LOW_STOCK_BOX_THRESHOLD = 2;
 const UNDO_SECONDS = 10;
 const DEFAULT_PAGE_SIZE = 10;
 
@@ -149,6 +134,7 @@ export function useStockData() {
   });
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  // Restock state
   const [restockDialogOpen, setRestockDialogOpen] = useState(false);
   const [restockStock, setRestockStock] = useState<Stock | null>(null);
   const [restockBoxes, setRestockBoxes] = useState(0);
@@ -156,13 +142,11 @@ export function useStockData() {
   const [restockNotes, setRestockNotes] = useState("");
   const [restockPriceOption, setRestockPriceOption] = useState<RestockPriceOption>("keep");
   const [restockExistingPriceId, setRestockExistingPriceId] = useState("");
-  const [restockNewBuyPrice, setRestockNewBuyPrice] = useState("");
-  const [restockNewSellPriceBox, setRestockNewSellPriceBox] = useState("");
-  const [restockNewSellPriceUnit, setRestockNewSellPriceUnit] = useState("");
   const [restockIsFree, setRestockIsFree] = useState(false);
   const [availablePrices, setAvailablePrices] = useState<ProductPrice[]>([]);
   const [loadingPrices, setLoadingPrices] = useState(false);
 
+  // Adjustment dialog
   const [adjustDialogOpen, setAdjustDialogOpen] = useState(false);
   const [adjustStock, setAdjustStock] = useState<Stock | null>(null);
   const [adjustMode, setAdjustMode] = useState<AdjustmentMode>("set");
@@ -171,6 +155,7 @@ export function useStockData() {
   const [adjustExactBoxes, setAdjustExactBoxes] = useState(0);
   const [adjustExactSingles, setAdjustExactSingles] = useState(0);
 
+  // Exchange dialog
   const [exchangeDialogOpen, setExchangeDialogOpen] = useState(false);
   const [exchangeForm, setExchangeForm] = useState({
     sourceProductId: "",
@@ -181,25 +166,30 @@ export function useStockData() {
   });
   const [exchangeLoading, setExchangeLoading] = useState(false);
 
+  // Entity management dialog
   const [entityDialogOpen, setEntityDialogOpen] = useState(false);
   const [activeEntityTab, setActiveEntityTab] = useState<"products" | "prices" | "category" | "brand" | "packaging">("products");
   const [entitySearch, setEntitySearch] = useState("");
-  const [priceListFilters, setPriceListFilters] = useState<PriceListFilters>({
-    page: 1,
-    limit: 10,
-    sortBy: "startAt",
-    sortOrder: "DESC",
-  });
-  const [priceListData, setPriceListData] = useState<PriceListResponse>({
-    data: [],
-    total: 0,
-    page: 1,
-    totalPages: 0,
-    limit: 10,
-  });
+
+  // Price list (for Manage dialog)
+  const [priceListData, setPriceListData] = useState<ProductPrice[]>([]);
   const [priceListLoading, setPriceListLoading] = useState(false);
   const [activatingPriceId, setActivatingPriceId] = useState<string | null>(null);
 
+  // Price CRUD dialogs
+  const [priceFormOpen, setPriceFormOpen] = useState(false);
+  const [editingPrice, setEditingPrice] = useState<ProductPrice | null>(null);
+  const [priceForm, setPriceForm] = useState({
+    productId: "",
+    buyPricePerBox: "",
+    sellPricePerBox: "",
+    sellPricePerUnit: "",
+    allowLoss: false,
+    startAt: "",
+    endAt: "",
+  });
+
+  // Product form
   const [productForm, setProductForm] = useState({
     name: "",
     description: "",
@@ -214,20 +204,26 @@ export function useStockData() {
   });
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
 
-  const [priceHistoryDialogOpen, setPriceHistoryDialogOpen] = useState(false);
-  const [selectedProductForHistory, setSelectedProductForHistory] = useState<Product | null>(null);
-
+  // Stock history dialog
   const [stockHistoryDialogOpen, setStockHistoryDialogOpen] = useState(false);
   const [selectedStockForHistory, setSelectedStockForHistory] = useState<Stock | null>(null);
   const [stockHistoryRecords, setStockHistoryRecords] = useState<StockHistoryRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // History price update state
+  const [updatingHistoryPriceId, setUpdatingHistoryPriceId] = useState<string | null>(null);
+  const [priceOptionsForHistory, setPriceOptionsForHistory] = useState<ProductPrice[]>([]);
+  const [loadingPriceOptions, setLoadingPriceOptions] = useState(false);
+
+  // Entity forms
   const [entityForm, setEntityForm] = useState({ name: "", type: "" });
   const [editingEntityId, setEditingEntityId] = useState<string | null>(null);
 
+  // Expanded rows and price layers
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [priceLayers, setPriceLayers] = useState<Record<string, PriceLayer[]>>({});
 
+  // Stats
   const [stats, setStats] = useState({
     totalProducts: 0,
     totalBoxes: 0,
@@ -237,7 +233,7 @@ export function useStockData() {
     totalInventoryValue: 0,
   });
 
-  // ---------- delete with undo ----------
+  // Delete with undo
   const [deleteAlertOpen, setDeleteAlertOpen] = useState(false);
   const [deleteStock, setDeleteStock] = useState<Stock | null>(null);
   const [deletedStockBackup, setDeletedStockBackup] = useState<Stock | null>(null);
@@ -248,7 +244,7 @@ export function useStockData() {
   const getBrandName = (id: string): string => brands.find((b) => b.id === id)?.name ?? "—";
   const getPackagingName = (id: string): string => packagings.find((p) => p.id === id)?.name ?? "—";
 
-  // ==================== FETCH ALL PRODUCTS (paginated) ====================
+  // ==================== FETCH ALL PRODUCTS ====================
   const fetchAllProducts = async (): Promise<Product[]> => {
     try {
       let allProducts: Product[] = [];
@@ -309,7 +305,6 @@ export function useStockData() {
       setBrands(Array.isArray(brandsArray) ? brandsArray : []);
       setPackagings(Array.isArray(pkgsArray) ? pkgsArray : []);
 
-      // compute stats
       const totalBoxes = stocksWithProducts.reduce((sum, s) => sum + s.boxQuantity, 0);
       const totalSingles = stocksWithProducts.reduce((sum, s) => sum + s.singleQuantity, 0);
       const lowStockItems = stocksWithProducts.filter(
@@ -346,40 +341,27 @@ export function useStockData() {
     }
   }, []);
 
-  // ==================== PRICE LIST FUNCTIONS ====================
-  const fetchPriceList = useCallback(async () => {
+  // ==================== PRICE LIST (for Manage dialog) ====================
+  const fetchPriceList = useCallback(async (productId: string) => {
     try {
       setPriceListLoading(true);
-      const params: Record<string, any> = {
-        page: priceListFilters.page,
-        limit: priceListFilters.limit,
-        sortBy: priceListFilters.sortBy,
-        sortOrder: priceListFilters.sortOrder,
-      };
-      if (priceListFilters.productId) params.productId = priceListFilters.productId;
-      if (priceListFilters.active !== undefined) params.active = priceListFilters.active;
-      const response = await api.get<PriceListResponse>("/stocks/prices", { params });
-      // ensure numeric conversion
-      const dataWithNumbers = response.data.data.map((p) => ({
-        ...p,
-        buyPricePerBox: Number(p.buyPricePerBox),
-        sellPricePerBox: Number(p.sellPricePerBox),
-        sellPricePerUnit: Number(p.sellPricePerUnit),
-      }));
-      setPriceListData({ ...response.data, data: dataWithNumbers });
-    } catch (error) {
-      toast.error("Failed to load price list");
+      const response = await api.get<ProductPrice[]>(`/price-history/product/${productId}`);
+      setPriceListData(response.data);
+    } catch (error: any) {
+      console.error("Price list fetch error:", error);
+      toast.error(error?.response?.data?.message || "Failed to load price list");
+      setPriceListData([]);
     } finally {
       setPriceListLoading(false);
     }
-  }, [priceListFilters]);
+  }, []);
 
   const handleActivatePrice = async (priceId: string, productId: string) => {
     try {
       setActivatingPriceId(priceId);
-      await api.patch(`/stocks/prices/${priceId}/activate`, { productId });
+      await api.patch(`/price-history/${priceId}/activate`, { productId });
       toast.success("Price activated successfully");
-      await fetchPriceList();
+      await fetchPriceList(productId);
       await fetchAll();
     } catch (error: any) {
       toast.error(error?.response?.data?.message || "Activation failed");
@@ -388,24 +370,112 @@ export function useStockData() {
     }
   };
 
-  const fetchPricesForProduct = async (productId: string) => {
+  const fetchPricesForRestock = async (productId: string) => {
     try {
       setLoadingPrices(true);
-      const response = await api.get<PriceListResponse>("/stocks/prices", {
-        params: { productId, limit: 50, active: undefined },
-      });
-      // ensure numeric conversion
-      const dataWithNumbers = response.data.data.map((p) => ({
-        ...p,
-        buyPricePerBox: Number(p.buyPricePerBox),
-        sellPricePerBox: Number(p.sellPricePerBox),
-        sellPricePerUnit: Number(p.sellPricePerUnit),
-      }));
-      setAvailablePrices(dataWithNumbers);
+      const response = await api.get<ProductPrice[]>(`/price-history/product/${productId}`);
+      setAvailablePrices(response.data);
     } catch (error) {
+      console.error("Failed to load price history:", error);
       toast.error("Failed to load price history");
     } finally {
       setLoadingPrices(false);
+    }
+  };
+
+  const openCreatePriceDialog = (product: Product) => {
+    setEditingPrice(null);
+    setPriceForm({
+      productId: product.id,
+      buyPricePerBox: "",
+      sellPricePerBox: "",
+      sellPricePerUnit: "",
+      allowLoss: false,
+      startAt: "",
+      endAt: "",
+    });
+    setPriceFormOpen(true);
+  };
+
+  const openEditPriceDialog = (price: ProductPrice) => {
+    setEditingPrice(price);
+    setPriceForm({
+      productId: price.productId,
+      buyPricePerBox: price.buyPricePerBox.toString(),
+      sellPricePerBox: price.sellPricePerBox.toString(),
+      sellPricePerUnit: price.sellPricePerUnit.toString(),
+      allowLoss: price.allowLoss,
+      startAt: price.startAt?.slice(0, 16) || "",
+      endAt: price.endAt?.slice(0, 16) || "",
+    });
+    setPriceFormOpen(true);
+  };
+
+  const handlePriceSubmit = async () => {
+    if (!priceForm.productId) {
+      toast.error("Product is required");
+      return;
+    }
+    const payload = {
+      productId: priceForm.productId,
+      buyPricePerBox: Number(priceForm.buyPricePerBox),
+      sellPricePerBox: Number(priceForm.sellPricePerBox),
+      sellPricePerUnit: Number(priceForm.sellPricePerUnit),
+      allowLoss: priceForm.allowLoss,
+      startAt: priceForm.startAt || undefined,
+    };
+    try {
+      setLoading(true);
+      if (editingPrice) {
+        await api.put(`/price-history/${editingPrice.id}`, {
+          buyPricePerBox: payload.buyPricePerBox,
+          sellPricePerBox: payload.sellPricePerBox,
+          sellPricePerUnit: payload.sellPricePerUnit,
+          allowLoss: payload.allowLoss,
+          endAt: priceForm.endAt || null,
+        });
+        toast.success("Price updated");
+      } else {
+        await api.post("/price-history", payload);
+        toast.success("Price created");
+      }
+      setPriceFormOpen(false);
+      await fetchPriceList(priceForm.productId);
+      await fetchAll();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || "Failed to save price");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeletePrice = async (priceId: string, productId: string) => {
+    if (!confirm("Delete this price? It cannot be deleted if already used in stock movements.")) return;
+    try {
+      await api.delete(`/price-history/${priceId}`);
+      toast.success("Price deleted");
+      await fetchPriceList(productId);
+      await fetchAll();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message || "Failed to delete price");
+    }
+  };
+
+  // ==================== ASSIGN PRICE TO STOCK ====================
+  const assignPriceToStock = async (stockId: string, newPriceId: string) => {
+    try {
+      setLoading(true);
+      await api.post(`/stocks/${stockId}/assign-price`, { priceId: newPriceId });
+      toast.success("Price assigned to stock successfully");
+      await fetchAll();
+      if (expandedRows.has(stockId)) {
+        await fetchPriceLayers(stockId);
+      }
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || "Failed to assign price");
+      throw error;
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -413,7 +483,20 @@ export function useStockData() {
   const fetchPriceLayers = async (stockId: string) => {
     try {
       const response = await api.get<PriceLayer[]>(`/stocks/${stockId}/price-layers`);
-      setPriceLayers((prev) => ({ ...prev, [stockId]: response.data }));
+      const layersWithNumbers = response.data.map((layer) => ({
+        ...layer,
+        buyPricePerBox: Number(layer.buyPricePerBox),
+        sellPricePerBox: Number(layer.sellPricePerBox),
+        sellPricePerUnit: Number(layer.sellPricePerUnit),
+        boxQuantity: Number(layer.boxQuantity),
+        singleQuantity: Number(layer.singleQuantity),
+        totalUnits: Number(layer.totalUnits),
+        remainingUnits: Number(layer.remainingUnits),
+        costPerUnit: Number(layer.costPerUnit),
+        profitPerUnit: Number(layer.profitPerUnit),
+        potentialProfit: Number(layer.potentialProfit),
+      }));
+      setPriceLayers((prev) => ({ ...prev, [stockId]: layersWithNumbers }));
     } catch (error) {
       console.error("Failed to load price layers", error);
     }
@@ -470,17 +553,9 @@ export function useStockData() {
     const boxNum = Number(form.boxQuantity) || 0;
     const singleNum = Number(form.singleQuantity) || 0;
     if (type === "box") {
-      setForm((prev) => ({
-        ...prev,
-        containerType: type,
-        singleQuantity: String(boxNum * unitsPerBox),
-      }));
+      setForm((prev) => ({ ...prev, containerType: type, singleQuantity: String(boxNum * unitsPerBox) }));
     } else {
-      setForm((prev) => ({
-        ...prev,
-        containerType: type,
-        boxQuantity: String(Math.floor(singleNum / unitsPerBox)),
-      }));
+      setForm((prev) => ({ ...prev, containerType: type, boxQuantity: String(Math.floor(singleNum / unitsPerBox)) }));
     }
   };
 
@@ -543,8 +618,7 @@ export function useStockData() {
       ...prev,
       totalBoxes: prev.totalBoxes - deleteStock.boxQuantity,
       totalSingles: prev.totalSingles - deleteStock.singleQuantity,
-      lowStockItems:
-        prev.lowStockItems - (deleteStock.boxQuantity === 0 && deleteStock.singleQuantity === 0 ? 1 : 0),
+      lowStockItems: prev.lowStockItems - (deleteStock.boxQuantity === 0 && deleteStock.singleQuantity === 0 ? 1 : 0),
     }));
     setDeleteAlertOpen(false);
     setDeleteStock(null);
@@ -595,11 +669,8 @@ export function useStockData() {
     setRestockNotes("");
     setRestockPriceOption("keep");
     setRestockExistingPriceId("");
-    setRestockNewBuyPrice("");
-    setRestockNewSellPriceBox("");
-    setRestockNewSellPriceUnit("");
     setRestockIsFree(false);
-    await fetchPricesForProduct(stock.productId);
+    await fetchPricesForRestock(stock.productId);
     setRestockDialogOpen(true);
   };
 
@@ -608,15 +679,13 @@ export function useStockData() {
     const product = restockStock.product;
     const oldBuyPrice = product.buyPricePerBox || 0;
     let effectiveNewPrice: number | null = null;
-    if (restockPriceOption === "new" && restockNewBuyPrice) {
-      effectiveNewPrice = Number(restockNewBuyPrice);
-    } else if (restockPriceOption === "existing" && restockExistingPriceId) {
+    if (restockPriceOption === "existing" && restockExistingPriceId) {
       const selected = availablePrices.find((p) => p.id === restockExistingPriceId);
       effectiveNewPrice = selected?.buyPricePerBox ?? null;
     }
     if (effectiveNewPrice === null) return null;
     const addedUnits = restockBoxes * product.unitsPerBox + restockSingles;
-    const costDifference = (effectiveNewPrice - oldBuyPrice) / product.unitsPerBox * addedUnits;
+    const costDifference = ((effectiveNewPrice - oldBuyPrice) / product.unitsPerBox) * addedUnits;
     return {
       oldCostPerUnit: oldBuyPrice / product.unitsPerBox,
       newCostPerUnit: effectiveNewPrice / product.unitsPerBox,
@@ -642,21 +711,11 @@ export function useStockData() {
       };
       if (restockPriceOption === "existing" && restockExistingPriceId) {
         payload.priceId = restockExistingPriceId;
-      } else if (restockPriceOption === "new") {
-        if (!restockNewBuyPrice) {
-          toast.error("Please enter a new buy price");
-          setLoading(false);
-          return;
-        }
-        payload.newBuyPricePerBox = Number(restockNewBuyPrice);
-        if (restockNewSellPriceBox) payload.newSellPricePerBox = Number(restockNewSellPriceBox);
-        if (restockNewSellPriceUnit) payload.newSellPricePerUnit = Number(restockNewSellPriceUnit);
       }
       await api.post(`/stocks/${restockStock.id}/restock`, payload);
       toast.success(`Restocked ${restockBoxes} boxes and ${restockSingles} singles`);
       setRestockDialogOpen(false);
       await fetchAll();
-      // refresh price layers for this stock if expanded
       if (expandedRows.has(restockStock.id)) {
         await fetchPriceLayers(restockStock.id);
       }
@@ -854,22 +913,13 @@ export function useStockData() {
     }
   };
 
-  const openPriceHistory = (product: Product) => {
-    setSelectedProductForHistory(product);
-    setPriceHistoryDialogOpen(true);
-  };
-
   // ==================== ENTITY CRUD ====================
   const getEntityEndpoint = (): string => {
     switch (activeEntityTab) {
-      case "category":
-        return "/categories";
-      case "brand":
-        return "/brands";
-      case "packaging":
-        return "/packagings";
-      default:
-        return "";
+      case "category": return "/categories";
+      case "brand": return "/brands";
+      case "packaging": return "/packagings";
+      default: return "";
     }
   };
 
@@ -939,6 +989,36 @@ export function useStockData() {
     setStockHistoryDialogOpen(true);
   };
 
+  // ==================== STOCK HISTORY PRICE UPDATE ====================
+  const fetchPriceOptionsForHistory = async (productId: string) => {
+    try {
+      setLoadingPriceOptions(true);
+      const response = await api.get<ProductPrice[]>(`/price-history/product/${productId}`);
+      setPriceOptionsForHistory(response.data);
+    } catch (error) {
+      console.error("Failed to load price options for history:", error);
+      toast.error("Could not load price options");
+    } finally {
+      setLoadingPriceOptions(false);
+    }
+  };
+
+  const updateHistoryPrice = async (historyId: string, newPriceId: string) => {
+    try {
+      setUpdatingHistoryPriceId(historyId);
+      await api.patch(`/stocks/history/${historyId}/price`, { priceId: newPriceId });
+      toast.success("Stock history price updated successfully");
+      if (selectedStockForHistory) {
+        await fetchStockHistory(selectedStockForHistory.productId);
+      }
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || "Failed to update history price");
+      throw error;
+    } finally {
+      setUpdatingHistoryPriceId(null);
+    }
+  };
+
   // ==================== UTILITIES ====================
   const productHasStock = (productId: string) => stocks.some((s) => s.productId === productId);
   const calculateStockProfit = (stock: Stock) => {
@@ -1001,12 +1081,14 @@ export function useStockData() {
 
   useEffect(() => {
     if (activeEntityTab === "prices") {
-      fetchPriceList();
+      // Optionally load prices for the first product? We'll leave it to user selection.
     }
-  }, [activeEntityTab, fetchPriceList]);
+  }, [activeEntityTab]);
 
   // Filtered stocks and pagination
-  const filteredStocks = stocks.filter((s) => s.product?.name.toLowerCase().includes(search.toLowerCase())).filter((s) => {
+  const filteredStocks = stocks.filter((s) =>
+    s.product?.name.toLowerCase().includes(search.toLowerCase())
+  ).filter((s) => {
     if (filterType === "box") return s.containerType === "box";
     if (filterType === "single") return s.containerType === "single";
     return true;
@@ -1026,7 +1108,6 @@ export function useStockData() {
       if (next.has(id)) next.delete(id);
       else {
         next.add(id);
-        // fetch price layers when expanded
         fetchPriceLayers(id);
       }
       return next;
@@ -1034,7 +1115,6 @@ export function useStockData() {
   };
 
   return {
-    // state
     stocks,
     products,
     categories,
@@ -1057,7 +1137,7 @@ export function useStockData() {
     totalPages,
     paginatedStocks,
     stats,
-    // dialogs visibility and state
+    // Dialogs and forms
     formDialogOpen,
     setFormDialogOpen,
     form,
@@ -1075,12 +1155,6 @@ export function useStockData() {
     setRestockPriceOption,
     restockExistingPriceId,
     setRestockExistingPriceId,
-    restockNewBuyPrice,
-    setRestockNewBuyPrice,
-    restockNewSellPriceBox,
-    setRestockNewSellPriceBox,
-    restockNewSellPriceUnit,
-    setRestockNewSellPriceUnit,
     restockIsFree,
     setRestockIsFree,
     availablePrices,
@@ -1109,16 +1183,12 @@ export function useStockData() {
     setActiveEntityTab,
     entitySearch,
     setEntitySearch,
-    priceListFilters,
-    setPriceListFilters,
     priceListData,
     priceListLoading,
     activatingPriceId,
     productForm,
+    setProductForm,
     editingProductId,
-    priceHistoryDialogOpen,
-    setPriceHistoryDialogOpen,
-    selectedProductForHistory,
     stockHistoryDialogOpen,
     setStockHistoryDialogOpen,
     selectedStockForHistory,
@@ -1132,12 +1202,28 @@ export function useStockData() {
     setDeleteAlertOpen,
     deleteStock,
     priceLayers,
-    // filtered entities
     filteredProducts,
     filteredCategories,
     filteredBrands,
     filteredPackagings,
-    // actions
+    // Price dialogs
+    priceFormOpen,
+    setPriceFormOpen,
+    priceForm,
+    setPriceForm,
+    editingPrice,
+    openCreatePriceDialog,
+    openEditPriceDialog,
+    handlePriceSubmit,
+    handleDeletePrice,
+    // Stock history price update
+    updateHistoryPrice,
+    fetchPriceOptionsForHistory,
+    priceOptionsForHistory,
+    loadingPriceOptions,
+    updatingHistoryPriceId,
+    assignPriceToStock,
+    // Actions
     getCategoryName,
     getBrandName,
     getPackagingName,
@@ -1157,7 +1243,6 @@ export function useStockData() {
     openProductForm,
     handleProductSubmit,
     handleProductDelete,
-    openPriceHistory,
     handleEntitySubmit,
     handleEditEntity,
     handleDeleteEntity,
@@ -1169,7 +1254,8 @@ export function useStockData() {
     openStockForm,
     setEditingProductId,
     setEditingEntityId,
-    setProductForm,
     fetchPriceList,
+    fetchAll,
+    fetchPriceLayers,
   };
 }
