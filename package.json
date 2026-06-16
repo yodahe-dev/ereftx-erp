@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "deploy": "git push origin main && ssh yodahe@100.91.219.27 \"~/env/deploy-prod.sh\""
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
