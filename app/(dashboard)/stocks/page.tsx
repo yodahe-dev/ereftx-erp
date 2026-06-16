@@ -717,7 +717,14 @@ export default function StockPage(): JSX.Element {
                                     <DropdownMenuItem onClick={(e) => { e.stopPropagation(); if (product) openPriceHistoryDialog(product); }} className="text-slate-200 focus:bg-slate-700">
                                       <Clock className="mr-2 h-4 w-4" /> Price History
                                     </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => { window.location.href = `/stocks/${stock.id}`; }} className="text-slate-200 focus:bg-slate-700">
+                                    {/* ✅ FIX: use product ID, fallback to stock ID */}
+                                    <DropdownMenuItem
+                                      onClick={() => {
+                                        const targetId = stock.product?.id || stock.id;
+                                        window.location.href = `/stocks/${targetId}`;
+                                      }}
+                                      className="text-slate-200 focus:bg-slate-700"
+                                    >
                                       <Eye className="mr-2 h-4 w-4" /> Detailed View
                                     </DropdownMenuItem>
                                     <DropdownMenuSeparator className="bg-slate-700" />
