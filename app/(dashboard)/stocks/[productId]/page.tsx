@@ -104,19 +104,31 @@ interface FullProductAnalytics {
 type ChartType = 'bar' | 'line' | 'area' | 'stacked' | 'pie';
 type ViewMode = 'boxes' | 'singles' | 'both';
 
-// ==================== DATE FORMATTERS ====================
-function formatDateLabel(dateStr: string): string {
+// ==================== ROBUST DATE FORMATTERS ====================
+function parseDateSafe(dateStr: string | undefined | null): Date | null {
+  if (!dateStr) return null;
   const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function formatDateLabel(dateStr: string | undefined | null): string {
+  if (!dateStr) return 'Unknown';
+  const d = parseDateSafe(dateStr);
+  if (!d) return dateStr; // fallback to the original string if it's not a valid date
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
-function formatDateTooltip(dateStr: string): string {
-  const d = new Date(dateStr);
+function formatDateTooltip(dateStr: string | undefined | null): string {
+  if (!dateStr) return 'Unknown date';
+  const d = parseDateSafe(dateStr);
+  if (!d) return dateStr;
   return d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 
-function formatDateFull(dateStr: string): string {
-  const d = new Date(dateStr);
+function formatDateFull(dateStr: string | undefined | null): string {
+  if (!dateStr) return 'Unknown';
+  const d = parseDateSafe(dateStr);
+  if (!d) return dateStr;
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
 
@@ -600,7 +612,7 @@ export default function ProductStockDetailPage() {
     stockLevelHistory = [],
   } = data;
 
-  // Prepare chart data with formatted dates
+  // Prepare chart data with formatted dates – using robust formatters
   const frequencyPieData = Object.entries(frequency)
     .filter(([, count]) => count > 0)
     .map(([action, count]) => ({
