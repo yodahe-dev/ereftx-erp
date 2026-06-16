@@ -31,109 +31,40 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-// ==================== STRICT TYPES ====================
-interface ActionFrequency {
-  restock: number;
-  sale: number;
-  adjust: number;
-  exchange: number;
-  initial: number;
-}
-
-interface TimelineEntry {
-  date: string;
-  boxChange: number;
-  singleChange: number;
-  boxCumulative: number;
-  singleCumulative: number;
-}
-
-interface SalesSummary {
-  totalBoxesSold: number;
-  totalSinglesSold: number;
-}
-
-interface RestockDetail {
-  date: string;
-  boxChange: number;
-  singleChange: number;
-  cumulativeBoxes: number;
-  cumulativeSingles: number;
-}
-
-interface SalesVelocityDay {
-  date: string;
-  boxesSold: number;
-  singlesSold: number;
-  totalUnits: number;
-}
-
-interface SalesVelocity {
-  data: SalesVelocityDay[];
-  average: number;
-  fastDays: string[];
-  slowDays: string[];
-  fastCount: number;
-  slowCount: number;
-}
-
-interface CurrentStock {
-  boxQuantity: number;
-  singleQuantity: number;
-  containerType: string | null;
-}
-
-interface StockLevelEntry {
-  date: string;
-  boxes: number;
-  singles: number;
-}
-
-interface FullProductAnalytics {
-  productId: string;
-  productName: string | null;
-  frequency: ActionFrequency;
-  timeline: TimelineEntry[];
-  sales: SalesSummary;
-  restockDetails: RestockDetail[];
-  salesVelocity: SalesVelocity;
-  currentStock: CurrentStock;
-  stockLevelHistory: StockLevelEntry[];
-}
-
-type ChartType = 'bar' | 'line' | 'area' | 'stacked' | 'pie';
-type ViewMode = 'boxes' | 'singles' | 'both';
+// ==================== SHARED TYPES & HELPERS ====================
+export type ChartType = 'bar' | 'line' | 'area' | 'stacked' | 'pie';
+export type ViewMode = 'boxes' | 'singles' | 'both';
 
 // ==================== ROBUST DATE FORMATTERS ====================
-function parseDateSafe(dateStr: string | undefined | null): Date | null {
+export function parseDateSafe(dateStr: string | undefined | null): Date | null {
   if (!dateStr) return null;
   const d = new Date(dateStr);
   return isNaN(d.getTime()) ? null : d;
 }
 
-function formatDateLabel(dateStr: string | undefined | null): string {
+export function formatDateLabel(dateStr: string | undefined | null): string {
   if (!dateStr) return 'Unknown';
   const d = parseDateSafe(dateStr);
-  if (!d) return dateStr; // fallback to the original string if it's not a valid date
+  if (!d) return dateStr;
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
-function formatDateTooltip(dateStr: string | undefined | null): string {
+export function formatDateTooltip(dateStr: string | undefined | null): string {
   if (!dateStr) return 'Unknown date';
   const d = parseDateSafe(dateStr);
   if (!d) return dateStr;
   return d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 
-function formatDateFull(dateStr: string | undefined | null): string {
+export function formatDateFull(dateStr: string | undefined | null): string {
   if (!dateStr) return 'Unknown';
   const d = parseDateSafe(dateStr);
   if (!d) return dateStr;
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// ==================== CUSTOM HOOK FOR CHART TYPE ====================
-function useChartType(storageKey: string, defaultType: ChartType = 'bar') {
+// ==================== SHARED HOOKS ====================
+export function useChartType(storageKey: string, defaultType: ChartType = 'bar') {
   const [chartType, setChartType] = useState<ChartType>(defaultType);
   const [isDefault, setIsDefault] = useState(false);
 
@@ -167,8 +98,7 @@ function useChartType(storageKey: string, defaultType: ChartType = 'bar') {
   return { chartType, updateChartType, setAsDefault, resetToDefault, isDefault };
 }
 
-// ==================== CUSTOM HOOK FOR VIEW MODE ====================
-function useViewMode(storageKey: string, defaultMode: ViewMode = 'both') {
+export function useViewMode(storageKey: string, defaultMode: ViewMode = 'both') {
   const [viewMode, setViewMode] = useState<ViewMode>(defaultMode);
 
   useEffect(() => {
@@ -186,8 +116,7 @@ function useViewMode(storageKey: string, defaultMode: ViewMode = 'both') {
   return { viewMode, updateViewMode };
 }
 
-// ==================== CUSTOM HOOK FOR FULLSCREEN ====================
-function useFullscreen() {
+export function useFullscreen() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [height, setHeight] = useState(400);
   const ref = useRef<HTMLDivElement>(null);
@@ -229,96 +158,123 @@ function useFullscreen() {
   return { ref, isFullscreen, height, toggleFullscreen };
 }
 
-// ==================== SKELETON ====================
-function ProductDetailSkeleton() {
+// ==================== CHART COMPONENTS (exportable) ===================
+
+export interface ActionFrequencyChartProps {
+  data: { name: string; value: number; color?: string }[];
+  title?: string;
+  storageKeyPrefix?: string;
+  height?: number;
+}
+
+export function ActionFrequencyChart({
+  data,
+  title = 'Action Frequency',
+  storageKeyPrefix = 'product_stock',
+  height = 350,
+}: ActionFrequencyChartProps) {
   return (
-    <div className="w-full space-y-8">
-      <Skeleton className="h-10 w-40 bg-white/10" />
-      <div className="grid gap-6 md:grid-cols-4">
-        {[1, 2, 3, 4].map((i) => (
-          <Skeleton key={i} className="h-32 rounded-xl bg-white/10" />
-        ))}
-      </div>
-      <div className="grid gap-8 lg:grid-cols-2">
-        <Skeleton className="h-[400px] rounded-2xl bg-white/10" />
-        <Skeleton className="h-[400px] rounded-2xl bg-white/10" />
-      </div>
-      <Skeleton className="h-64 rounded-2xl bg-white/10" />
-      <div className="grid gap-8 lg:grid-cols-2">
-        <Skeleton className="h-[400px] rounded-2xl bg-white/10" />
-        <Skeleton className="h-[400px] rounded-2xl bg-white/10" />
-      </div>
-    </div>
+    <ChartWithControls
+      title={title}
+      data={data}
+      dataKey="value"
+      defaultChartType="pie"
+      storageKeyPrefix={storageKeyPrefix}
+      colorStart="#3B82F6"
+      colorEnd="#8B5CF6"
+      height={height}
+    />
   );
 }
 
-// ==================== KPI CARD ====================
-function KpiCard({
-  label,
-  value,
-  icon,
-  color,
-  prefix = '',
-  suffix = '',
-}: {
-  label: string;
-  value: number;
-  icon: React.ReactNode;
-  color: string;
-  prefix?: string;
-  suffix?: string;
-}) {
-  const [count, setCount] = useState(0);
+export interface StockLevelsChartProps {
+  data: { name: string; fullDate: string; tooltipLabel: string; Boxes: number; Singles: number }[];
+  title?: string;
+  storageKeyPrefix?: string;
+  height?: number;
+}
 
-  useEffect(() => {
-    let start = 0;
-    const duration = 1000;
-    const step = Math.ceil(value / (duration / 16));
-    const timer = setInterval(() => {
-      start += step;
-      if (start >= value) {
-        setCount(value);
-        clearInterval(timer);
-      } else {
-        setCount(start);
-      }
-    }, 16);
-    return () => clearInterval(timer);
-  }, [value]);
-
+export function StockLevelsChart({
+  data,
+  title = 'Stock Levels Over Time',
+  storageKeyPrefix = 'product_stock',
+  height = 350,
+}: StockLevelsChartProps) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      whileHover={{ scale: 1.02 }}
-      transition={{ type: 'spring', stiffness: 300 }}
-      className="relative group"
-    >
-      <div className="absolute inset-0 bg-gradient-to-r from-white/5 to-transparent rounded-xl blur-xl group-hover:blur-2xl transition-all duration-300" />
-      <div className="relative backdrop-blur-xl bg-white/5 rounded-xl border border-white/10 p-5 hover:border-white/20 transition-all duration-300">
-        <div className="flex items-start justify-between">
-          <div>
-            <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">{label}</p>
-            <p className="text-3xl font-bold" style={{ color }}>
-              {prefix}
-              {count.toLocaleString()}
-              {suffix}
-            </p>
-          </div>
-          <div className="p-2 rounded-lg bg-white/5" style={{ color }}>
-            {icon}
-          </div>
-        </div>
-        <div
-          className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-current to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"
-          style={{ color }}
-        />
-      </div>
-    </motion.div>
+    <ChartWithControls
+      title={title}
+      data={data}
+      dataKey="Boxes"
+      secondaryDataKey="Singles"
+      defaultChartType="area"
+      storageKeyPrefix={storageKeyPrefix}
+      colorStart="#3B82F6"
+      colorEnd="#10B981"
+      height={height}
+      enableViewToggle={true}
+    />
   );
 }
 
-// ==================== CHART WRAPPER WITH CONTROLS & FULLSCREEN ====================
+export interface CumulativeRestocksChartProps {
+  data: { name: string; fullDate: string; tooltipLabel: string; Boxes: number; Singles: number }[];
+  title?: string;
+  storageKeyPrefix?: string;
+  height?: number;
+}
+
+export function CumulativeRestocksChart({
+  data,
+  title = 'Cumulative Restocks',
+  storageKeyPrefix = 'product_stock',
+  height = 350,
+}: CumulativeRestocksChartProps) {
+  return (
+    <ChartWithControls
+      title={title}
+      data={data}
+      dataKey="Boxes"
+      secondaryDataKey="Singles"
+      defaultChartType="line"
+      storageKeyPrefix={storageKeyPrefix}
+      colorStart="#3B82F6"
+      colorEnd="#8B5CF6"
+      height={height}
+      enableViewToggle={true}
+    />
+  );
+}
+
+export interface SalesVelocityChartProps {
+  data: { name: string; fullDate: string; tooltipLabel: string; Boxes: number; Singles: number }[];
+  title?: string;
+  storageKeyPrefix?: string;
+  height?: number;
+}
+
+export function SalesVelocityChart({
+  data,
+  title = 'Daily Sales Volume',
+  storageKeyPrefix = 'product_stock',
+  height = 350,
+}: SalesVelocityChartProps) {
+  return (
+    <ChartWithControls
+      title={title}
+      data={data}
+      dataKey="Boxes"
+      secondaryDataKey="Singles"
+      defaultChartType="bar"
+      storageKeyPrefix={storageKeyPrefix}
+      colorStart="#10B981"
+      colorEnd="#8B5CF6"
+      height={height}
+      enableViewToggle={true}
+    />
+  );
+}
+
+// ==================== INTERNAL CHART WRAPPER ====================
 function ChartWithControls({
   title,
   data,
@@ -612,7 +568,7 @@ export default function ProductStockDetailPage() {
     stockLevelHistory = [],
   } = data;
 
-  // Prepare chart data with formatted dates – using robust formatters
+  // Prepare chart data
   const frequencyPieData = Object.entries(frequency)
     .filter(([, count]) => count > 0)
     .map(([action, count]) => ({
@@ -741,7 +697,7 @@ export default function ProductStockDetailPage() {
           ))}
         </motion.div>
 
-        {/* Charts with controls */}
+        {/* Charts using the new standalone components */}
         <motion.div
           variants={containerVariants}
           initial="hidden"
@@ -749,32 +705,13 @@ export default function ProductStockDetailPage() {
           className="grid gap-8 lg:grid-cols-2"
         >
           <motion.div variants={itemVariants}>
-            <ChartWithControls
-              title="Action Frequency"
-              data={frequencyPieData}
-              dataKey="value"
-              defaultChartType="pie"
-              storageKeyPrefix="product_stock"
-              colorStart="#3B82F6"
-              colorEnd="#8B5CF6"
-            />
+            <ActionFrequencyChart data={frequencyPieData} />
           </motion.div>
           <motion.div variants={itemVariants}>
-            <ChartWithControls
-              title="Stock Levels Over Time"
-              data={stockLevelData}
-              dataKey="Boxes"
-              secondaryDataKey="Singles"
-              defaultChartType="area"
-              storageKeyPrefix="product_stock"
-              colorStart="#3B82F6"
-              colorEnd="#10B981"
-              enableViewToggle={true}
-            />
+            <StockLevelsChart data={stockLevelData} />
           </motion.div>
         </motion.div>
 
-        {/* Cumulative Restocks */}
         {restockCumulativeData.length > 0 && (
           <motion.div
             variants={containerVariants}
@@ -783,22 +720,11 @@ export default function ProductStockDetailPage() {
             className="mt-12"
           >
             <motion.div variants={itemVariants}>
-              <ChartWithControls
-                title="Cumulative Restocks"
-                data={restockCumulativeData}
-                dataKey="Boxes"
-                secondaryDataKey="Singles"
-                defaultChartType="line"
-                storageKeyPrefix="product_stock"
-                colorStart="#3B82F6"
-                colorEnd="#8B5CF6"
-                enableViewToggle={true}
-              />
+              <CumulativeRestocksChart data={restockCumulativeData} />
             </motion.div>
           </motion.div>
         )}
 
-        {/* Sales Velocity */}
         {salesVelocityData.length > 0 && (
           <motion.div
             variants={containerVariants}
@@ -807,17 +733,7 @@ export default function ProductStockDetailPage() {
             className="mt-12 grid gap-8 lg:grid-cols-2"
           >
             <motion.div variants={itemVariants}>
-              <ChartWithControls
-                title="Daily Sales Volume"
-                data={salesVelocityData}
-                dataKey="Boxes"
-                secondaryDataKey="Singles"
-                defaultChartType="bar"
-                storageKeyPrefix="product_stock"
-                colorStart="#10B981"
-                colorEnd="#8B5CF6"
-                enableViewToggle={true}
-              />
+              <SalesVelocityChart data={salesVelocityData} />
             </motion.div>
             <motion.div variants={itemVariants}>
               <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-6 h-full flex flex-col justify-center">
@@ -921,4 +837,164 @@ export default function ProductStockDetailPage() {
       </motion.div>
     </AnimatePresence>
   );
+}
+
+// ==================== SKELETON (internal) ====================
+function ProductDetailSkeleton() {
+  return (
+    <div className="w-full space-y-8">
+      <Skeleton className="h-10 w-40 bg-white/10" />
+      <div className="grid gap-6 md:grid-cols-4">
+        {[1, 2, 3, 4].map((i) => (
+          <Skeleton key={i} className="h-32 rounded-xl bg-white/10" />
+        ))}
+      </div>
+      <div className="grid gap-8 lg:grid-cols-2">
+        <Skeleton className="h-[400px] rounded-2xl bg-white/10" />
+        <Skeleton className="h-[400px] rounded-2xl bg-white/10" />
+      </div>
+      <Skeleton className="h-64 rounded-2xl bg-white/10" />
+      <div className="grid gap-8 lg:grid-cols-2">
+        <Skeleton className="h-[400px] rounded-2xl bg-white/10" />
+        <Skeleton className="h-[400px] rounded-2xl bg-white/10" />
+      </div>
+    </div>
+  );
+}
+
+// ==================== KPI CARD (internal) ====================
+function KpiCard({
+  label,
+  value,
+  icon,
+  color,
+  prefix = '',
+  suffix = '',
+}: {
+  label: string;
+  value: number;
+  icon: React.ReactNode;
+  color: string;
+  prefix?: string;
+  suffix?: string;
+}) {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let start = 0;
+    const duration = 1000;
+    const step = Math.ceil(value / (duration / 16));
+    const timer = setInterval(() => {
+      start += step;
+      if (start >= value) {
+        setCount(value);
+        clearInterval(timer);
+      } else {
+        setCount(start);
+      }
+    }, 16);
+    return () => clearInterval(timer);
+  }, [value]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ scale: 1.02 }}
+      transition={{ type: 'spring', stiffness: 300 }}
+      className="relative group"
+    >
+      <div className="absolute inset-0 bg-gradient-to-r from-white/5 to-transparent rounded-xl blur-xl group-hover:blur-2xl transition-all duration-300" />
+      <div className="relative backdrop-blur-xl bg-white/5 rounded-xl border border-white/10 p-5 hover:border-white/20 transition-all duration-300">
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-xs text-gray-400 uppercase tracking-wider mb-2">{label}</p>
+            <p className="text-3xl font-bold" style={{ color }}>
+              {prefix}
+              {count.toLocaleString()}
+              {suffix}
+            </p>
+          </div>
+          <div className="p-2 rounded-lg bg-white/5" style={{ color }}>
+            {icon}
+          </div>
+        </div>
+        <div
+          className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-current to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"
+          style={{ color }}
+        />
+      </div>
+    </motion.div>
+  );
+}
+
+// ==================== TYPE DEFINITIONS (for the main data) ====================
+// These should match what the API returns
+interface FullProductAnalytics {
+  productId: string;
+  productName: string | null;
+  frequency: ActionFrequency;
+  timeline: TimelineEntry[];
+  sales: SalesSummary;
+  restockDetails: RestockDetail[];
+  salesVelocity: SalesVelocity;
+  currentStock: CurrentStock;
+  stockLevelHistory: StockLevelEntry[];
+}
+
+interface ActionFrequency {
+  restock: number;
+  sale: number;
+  adjust: number;
+  exchange: number;
+  initial: number;
+}
+
+interface TimelineEntry {
+  date: string;
+  boxChange: number;
+  singleChange: number;
+  boxCumulative: number;
+  singleCumulative: number;
+}
+
+interface SalesSummary {
+  totalBoxesSold: number;
+  totalSinglesSold: number;
+}
+
+interface RestockDetail {
+  date: string;
+  boxChange: number;
+  singleChange: number;
+  cumulativeBoxes: number;
+  cumulativeSingles: number;
+}
+
+interface SalesVelocityDay {
+  date: string;
+  boxesSold: number;
+  singlesSold: number;
+  totalUnits: number;
+}
+
+interface SalesVelocity {
+  data: SalesVelocityDay[];
+  average: number;
+  fastDays: string[];
+  slowDays: string[];
+  fastCount: number;
+  slowCount: number;
+}
+
+interface CurrentStock {
+  boxQuantity: number;
+  singleQuantity: number;
+  containerType: string | null;
+}
+
+interface StockLevelEntry {
+  date: string;
+  boxes: number;
+  singles: number;
 }
