@@ -33,7 +33,6 @@ function parseSafeNumber(value: any): number {
   if (value === null || value === undefined || value === '') return 0;
   if (typeof value === 'number') return isNaN(value) ? 0 : value;
   if (typeof value === 'string') {
-    // Remove commas and spaces
     const cleaned = value.replace(/,/g, '').trim();
     const num = parseFloat(cleaned);
     return isNaN(num) ? 0 : num;
@@ -244,6 +243,7 @@ export default function SalesAnalyticsPage() {
       const rpmRes = await api.get('/analytics/sales/revenue-profit-margin');
       setRevenueProfitMargin(rpmRes.data.data || []);
     } catch (error: any) {
+      console.error('Sales analytics fetch error:', error);
       toast.error(error.message || 'Failed to load sales analytics');
     } finally {
       setLoading(false);
