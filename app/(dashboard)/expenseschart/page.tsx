@@ -398,7 +398,7 @@ function ExpenseTreemap({ data }: { data: any[] }) {
         content={<CustomizedTreemapContent />}
       >
         <RechartsTooltip
-          formatter={(value: number) => formatCurrency(value)}
+          formatter={(value: any) => formatCurrency(value)}
           contentStyle={{ background: '#1e293b', border: 'none', borderRadius: '8px' }}
           labelStyle={{ color: '#94a3b8' }}
         />
