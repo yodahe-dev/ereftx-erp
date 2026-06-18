@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import {
@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { RefreshCw, BarChart3, TrendingUp, Award, Calendar } from 'lucide-react';
+import { RefreshCw, BarChart3, TrendingUp, Award, Calendar, Eye, EyeOff, RotateCcw } from 'lucide-react';
 import {
   Tabs,
   TabsContent,
@@ -54,12 +54,11 @@ function parseSafeNumber(value: any): number {
   return 0;
 }
 
-// ── Date formatters (now include year) ──
+// ── Date formatters (include year) ──
 function formatDateLabel(dateStr: string | undefined | null): string {
   if (!dateStr) return 'Unknown';
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr;
-  // Show short month/day/year so we can see the year on the chart
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
@@ -116,96 +115,220 @@ interface TopProduct {
   totalProfit?: number;
 }
 
-// ── Chart Type Selector Wrapper ──
-function ChartWithTypeSelector({
+// ── Helper to get localStorage key ──
+function getStorageKey(baseKey: string) {
+  return `chart_controls_${baseKey}`;
+}
+
+// ── Reusable Chart with series toggles ──
+export function ChartWithControls({
   title,
   data,
-  dataKey,
-  secondaryDataKey,
+  availableKeys,
+  defaultVisibleKeys,
   defaultChartType,
   storageKey,
-  colorStart,
-  colorEnd,
   height = 350,
   xAxisTickFormatter,
   tooltipLabelFormatter,
 }: {
   title: string;
   data: any[];
-  dataKey: string;
-  secondaryDataKey?: string;
+  availableKeys: { key: string; label: string; color: string }[];
+  defaultVisibleKeys: string[];
   defaultChartType: 'bar' | 'line' | 'area' | 'stacked' | 'pie';
   storageKey: string;
-  colorStart?: string;
-  colorEnd?: string;
   height?: number;
   xAxisTickFormatter?: (value: string) => string;
   tooltipLabelFormatter?: (label: string) => string;
 }) {
-  const [chartType, setChartType] = useState<'bar' | 'line' | 'area' | 'stacked' | 'pie'>(defaultChartType);
-
-  useEffect(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved && ['bar', 'line', 'area', 'stacked', 'pie'].includes(saved)) {
-      setChartType(saved as any);
+  // Load saved state from localStorage
+  const loadSavedState = () => {
+    try {
+      const saved = localStorage.getItem(getStorageKey(storageKey));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          chartType: parsed.chartType || defaultChartType,
+          visibleKeys: parsed.visibleKeys || defaultVisibleKeys,
+        };
+      }
+    } catch (e) {
+      // ignore
     }
-  }, [storageKey]);
+    return { chartType: defaultChartType, visibleKeys: defaultVisibleKeys };
+  };
+
+  const [state, setState] = useState(() => loadSavedState());
+  const [chartType, setChartType] = useState<'bar' | 'line' | 'area' | 'stacked' | 'pie'>(state.chartType);
+  const [visibleKeys, setVisibleKeys] = useState<string[]>(state.visibleKeys);
+
+  // Save to localStorage whenever chartType or visibleKeys change
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        getStorageKey(storageKey),
+        JSON.stringify({ chartType, visibleKeys })
+      );
+    } catch (e) {
+      // ignore
+    }
+  }, [chartType, visibleKeys, storageKey]);
 
   const updateChartType = (type: any) => {
     setChartType(type);
-    localStorage.setItem(storageKey, type);
   };
 
-  if (!data || data.length === 0) {
-    return (
-      <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-white font-semibold text-lg">{title}</h3>
-        </div>
-        <div className="flex items-center justify-center h-[350px] text-gray-400">
-          No data available
-        </div>
-      </div>
-    );
+  const toggleKey = (key: string) => {
+    // If the key is already visible, and it's the only one, prevent toggling off
+    if (visibleKeys.includes(key) && visibleKeys.length === 1) {
+      toast.warning('At least one series must be visible', {
+        description: 'You cannot hide the last visible series.',
+        duration: 2000,
+      });
+      return;
+    }
+
+    setVisibleKeys((prev) => {
+      if (prev.includes(key)) {
+        return prev.filter((k) => k !== key);
+      }
+      return [...prev, key];
+    });
+  };
+
+  const resetToDefault = () => {
+    setVisibleKeys(defaultVisibleKeys);
+    setChartType(defaultChartType);
+  };
+
+  // Determine primary and secondary keys (first two visible)
+  const primaryKey = visibleKeys[0] || null;
+  const secondaryKey = visibleKeys[1] || null;
+
+  // Get colors
+  const primaryColor = availableKeys.find((k) => k.key === primaryKey)?.color || '#3B82F6';
+  const secondaryColor = secondaryKey
+    ? availableKeys.find((k) => k.key === secondaryKey)?.color || '#8B5CF6'
+    : undefined;
+
+  // If for some reason no key is visible, force the first
+  if (!primaryKey && availableKeys.length > 0) {
+    setVisibleKeys([availableKeys[0].key]);
   }
 
-  // Log the first few data points to verify dates
-  console.log(`[${title}] First 3 data points:`, data.slice(0, 3));
-
   return (
-    <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-6 w-full max-w-full overflow-hidden">
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-        <h3 className="text-white font-semibold text-lg">{title}</h3>
-        <Select value={chartType} onValueChange={updateChartType}>
-          <SelectTrigger className="w-[140px] bg-white/10 border-white/20 text-white">
-            <SelectValue placeholder="Chart type" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="bar">📊 Bar</SelectItem>
-            <SelectItem value="line">📈 Line</SelectItem>
-            <SelectItem value="area">📉 Area</SelectItem>
-            <SelectItem value="stacked">📚 Stacked</SelectItem>
-            <SelectItem value="pie">🥧 Pie</SelectItem>
-          </SelectContent>
-        </Select>
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3 }}
+      className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-6 w-full max-w-full overflow-hidden hover:border-white/30 hover:shadow-2xl hover:shadow-emerald-500/10 transition-all duration-300"
+    >
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
+        <h3 className="text-white font-semibold text-lg flex items-center gap-2">
+          <span className="w-1 h-6 rounded-full bg-gradient-to-b from-emerald-400 to-teal-400" />
+          {title}
+        </h3>
+        <div className="flex flex-wrap gap-2 items-center">
+          {/* Series toggles */}
+          {availableKeys.map((k) => {
+            const isVisible = visibleKeys.includes(k.key);
+            const isLast = visibleKeys.length === 1 && isVisible;
+            return (
+              <motion.button
+                key={k.key}
+                onClick={() => toggleKey(k.key)}
+                className={`px-3 py-1 text-xs rounded-full transition-all flex items-center gap-1 ${
+                  isVisible
+                    ? 'bg-white/20 text-white shadow-lg'
+                    : 'bg-white/5 text-gray-400 hover:bg-white/10'
+                } ${isLast ? 'opacity-50 cursor-not-allowed' : ''}`}
+                style={{
+                  border: isVisible ? `2px solid ${k.color}` : '2px solid transparent',
+                }}
+                whileHover={!isLast ? { scale: 1.05 } : {}}
+                whileTap={!isLast ? { scale: 0.95 } : {}}
+                animate={isLast ? { x: [0, -5, 5, -5, 5, 0] } : {}}
+                transition={{ duration: 0.4 }}
+                title={isLast ? 'Cannot hide the last visible series' : 'Click to toggle'}
+                disabled={isLast}
+              >
+                {isVisible ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                {k.label}
+              </motion.button>
+            );
+          })}
+
+          {/* Chart type selector */}
+          <Select value={chartType} onValueChange={updateChartType}>
+            <SelectTrigger className="w-[140px] bg-white/10 border-white/20 text-white">
+              <SelectValue placeholder="Chart type" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="bar">📊 Bar</SelectItem>
+              <SelectItem value="line">📈 Line</SelectItem>
+              <SelectItem value="area">📉 Area</SelectItem>
+              <SelectItem value="stacked">📚 Stacked</SelectItem>
+              <SelectItem value="pie">🥧 Pie</SelectItem>
+            </SelectContent>
+          </Select>
+
+          {/* Reset button */}
+          <motion.button
+            onClick={resetToDefault}
+            className="p-1.5 rounded-full bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+            whileHover={{ rotate: 180 }}
+            transition={{ duration: 0.3 }}
+            title="Reset to default"
+          >
+            <RotateCcw className="h-4 w-4" />
+          </motion.button>
+        </div>
       </div>
-      <ReusableChart
-        title=""
-        data={data}
-        dataKey={dataKey}
-        secondaryDataKey={secondaryDataKey}
-        chartType={chartType}
-        colorStart={colorStart || '#3B82F6'}
-        colorEnd={colorEnd || '#8B5CF6'}
-        height={height}
-        xAxisTickFormatter={xAxisTickFormatter}
-        tooltipLabelFormatter={tooltipLabelFormatter}
-      />
-    </div>
+
+      <AnimatePresence mode="wait">
+        {data.length === 0 ? (
+          <motion.div
+            key="empty"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="flex items-center justify-center h-[350px] text-gray-400"
+          >
+            No data available
+          </motion.div>
+        ) : (
+          <motion.div
+            key={chartType + visibleKeys.join(',')}
+            initial={{ opacity: 0.5, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.3 }}
+          >
+            <ReusableChart
+              title=""
+              data={data}
+              dataKey={primaryKey || availableKeys[0]?.key || ''}
+              secondaryDataKey={secondaryKey || undefined}
+              chartType={chartType}
+              colorStart={primaryColor}
+              colorEnd={secondaryColor}
+              height={height}
+              xAxisTickFormatter={xAxisTickFormatter}
+              tooltipLabelFormatter={tooltipLabelFormatter}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Optional: show count of visible series */}
+      <div className="mt-2 text-xs text-gray-500 text-right">
+        {visibleKeys.length} series visible
+      </div>
+    </motion.div>
   );
 }
 
-// ── Main Component ──
+// ── Main Page Component (unchanged) ──
 export default function SalesAnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -280,9 +403,7 @@ export default function SalesAnalyticsPage() {
   const transformDailyData = (data: any[], keys: string[]) => {
     if (!data || data.length === 0) return [];
     return data.map((item) => ({
-      // Keep the original date for reference
       date: item.date,
-      // Create a display label that includes the year
       name: formatDateLabel(item.date),
       fullDate: formatDateFull(item.date),
       tooltipLabel: formatDateTooltip(item.date),
@@ -290,21 +411,22 @@ export default function SalesAnalyticsPage() {
     }));
   };
 
-  // ── Compute KPIs with safe parsing ──
+  // ── Compute KPIs ──
   const totalRevenue = (salesSummary || []).reduce((sum, d) => sum + parseSafeNumber(d.totalRevenue), 0);
   const totalProfit = (salesSummary || []).reduce((sum, d) => sum + parseSafeNumber(d.totalProfit), 0);
   const totalSalesCount = (salesSummary || []).reduce((sum, d) => sum + parseSafeNumber(d.salesCount), 0);
-  const avgMargin = (salesSummary || []).length > 0
-    ? (salesSummary || []).reduce((sum, d) => sum + parseSafeNumber(d.marginPercent), 0) / (salesSummary || []).length
-    : 0;
+  const avgMargin =
+    (salesSummary || []).length > 0
+      ? (salesSummary || []).reduce((sum, d) => sum + parseSafeNumber(d.marginPercent), 0) /
+        (salesSummary || []).length
+      : 0;
 
-  // ── Prepare chart data ──
+  // ── Prepare data for each chart ──
   const revenueProfitData = transformDailyData(revenueProfitMargin, ['revenue', 'profit', 'marginPercent']);
   const salesFreqData = transformDailyData(dailySalesFrequency, ['saleCount']);
   const quantityData = transformDailyData(dailyQuantitySold, ['totalUnits']);
   const costVsRetailData = transformDailyData(costVsRetail, ['avgBuyPrice', 'avgSellCost']);
 
-  // Unit Type Mix
   const unitTypePieData = (unitTypeBreakdown || []).map((item) => ({
     name: item.name,
     value: parseSafeNumber(item.total),
@@ -318,7 +440,6 @@ export default function SalesAnalyticsPage() {
     Singles: parseSafeNumber(item.singles),
   }));
 
-  // Box vs Single Donut
   const totalBoxes = (unitTypeBreakdown || []).reduce((sum, item) => sum + parseSafeNumber(item.boxes), 0);
   const totalSingles = (unitTypeBreakdown || []).reduce((sum, item) => sum + parseSafeNumber(item.singles), 0);
   const boxSingleDonutData = [
@@ -326,7 +447,6 @@ export default function SalesAnalyticsPage() {
     { name: 'Singles', value: totalSingles, color: '#10B981' },
   ];
 
-  // Quadrant Heatmap
   const heatmapVolumeData = (quadrantHeatmap || []).map((item) => ({
     name: item.productName.length > 15 ? item.productName.slice(0, 15) + '…' : item.productName,
     fullName: item.productName,
@@ -341,7 +461,6 @@ export default function SalesAnalyticsPage() {
     color: item.hasLossLeader ? '#8B5CF6' : '#3B82F6',
   }));
 
-  // Top Products
   const topSellingData = (topSelling || []).map((item) => ({
     name: item.productName.length > 15 ? item.productName.slice(0, 15) + '…' : item.productName,
     fullName: item.productName,
@@ -354,7 +473,7 @@ export default function SalesAnalyticsPage() {
     value: parseSafeNumber(item.totalProfit),
   }));
 
-  // ── Render ──
+  // ── Loading / Error states ──
   if (loading) {
     return (
       <div className="container mx-auto px-4 py-8 max-w-7xl overflow-x-hidden">
@@ -392,6 +511,7 @@ export default function SalesAnalyticsPage() {
     );
   }
 
+  // ── Main Render ──
   return (
     <div className="container mx-auto px-4 py-8 max-w-7xl overflow-x-hidden w-full max-w-full">
       {/* Header */}
@@ -492,111 +612,120 @@ export default function SalesAnalyticsPage() {
         {/* OVERVIEW TAB */}
         <TabsContent value="overview" className="mt-6 space-y-8 w-full max-w-full">
           <div className="grid gap-8 lg:grid-cols-2 w-full max-w-full">
-            <ChartWithTypeSelector
+            {/* Revenue vs Profit with Margin */}
+            <ChartWithControls
               title="Revenue vs Profit with Margin"
               data={revenueProfitData}
-              dataKey="revenue"
-              secondaryDataKey="profit"
+              availableKeys={[
+                { key: 'revenue', label: 'Revenue', color: '#10B981' },
+                { key: 'profit', label: 'Profit', color: '#8B5CF6' },
+                { key: 'marginPercent', label: 'Margin %', color: '#F59E0B' },
+              ]}
+              defaultVisibleKeys={['revenue', 'profit']}
               defaultChartType="bar"
               storageKey="sales_chart_rpm"
-              colorStart="#10B981"
-              colorEnd="#8B5CF6"
               xAxisTickFormatter={formatDateLabel}
               tooltipLabelFormatter={formatDateTooltip}
             />
 
-            <ChartWithTypeSelector
+            {/* Daily Profit */}
+            <ChartWithControls
               title="Daily Profit"
               data={revenueProfitData}
-              dataKey="profit"
+              availableKeys={[{ key: 'profit', label: 'Profit', color: '#8B5CF6' }]}
+              defaultVisibleKeys={['profit']}
               defaultChartType="line"
               storageKey="sales_chart_daily_profit"
-              colorStart="#8B5CF6"
-              colorEnd="#EC4899"
               xAxisTickFormatter={formatDateLabel}
               tooltipLabelFormatter={formatDateTooltip}
             />
 
-            <ChartWithTypeSelector
+            {/* Daily Sales Frequency */}
+            <ChartWithControls
               title="Daily Sales Frequency"
               data={salesFreqData}
-              dataKey="saleCount"
+              availableKeys={[{ key: 'saleCount', label: 'Sales Count', color: '#3B82F6' }]}
+              defaultVisibleKeys={['saleCount']}
               defaultChartType="line"
               storageKey="sales_chart_frequency"
-              colorStart="#3B82F6"
-              colorEnd="#8B5CF6"
               xAxisTickFormatter={formatDateLabel}
               tooltipLabelFormatter={formatDateTooltip}
             />
 
-            <ChartWithTypeSelector
+            {/* Daily Quantity Sold */}
+            <ChartWithControls
               title="Daily Quantity Sold"
               data={quantityData}
-              dataKey="totalUnits"
+              availableKeys={[{ key: 'totalUnits', label: 'Units Sold', color: '#8B5CF6' }]}
+              defaultVisibleKeys={['totalUnits']}
               defaultChartType="area"
               storageKey="sales_chart_quantity"
-              colorStart="#8B5CF6"
-              colorEnd="#EC4899"
               xAxisTickFormatter={formatDateLabel}
               tooltipLabelFormatter={formatDateTooltip}
             />
 
-            <ChartWithTypeSelector
+            {/* Cost vs Retail Price */}
+            <ChartWithControls
               title="Cost vs Retail Price"
               data={costVsRetailData}
-              dataKey="avgBuyPrice"
-              secondaryDataKey="avgSellCost"
+              availableKeys={[
+                { key: 'avgBuyPrice', label: 'Avg Cost', color: '#EF4444' },
+                { key: 'avgSellCost', label: 'Avg Retail', color: '#10B981' },
+              ]}
+              defaultVisibleKeys={['avgBuyPrice', 'avgSellCost']}
               defaultChartType="line"
               storageKey="sales_chart_cost_retail"
-              colorStart="#EF4444"
-              colorEnd="#10B981"
               xAxisTickFormatter={formatDateLabel}
               tooltipLabelFormatter={formatDateTooltip}
             />
 
-            <ChartWithTypeSelector
+            {/* Box vs Single (Donut) */}
+            <ChartWithControls
               title="Box vs Single (Donut)"
               data={boxSingleDonutData}
-              dataKey="value"
+              availableKeys={[
+                { key: 'value', label: 'Boxes', color: '#3B82F6' },
+              ]}
+              defaultVisibleKeys={['value']}
               defaultChartType="pie"
               storageKey="sales_chart_box_single_donut"
-              colorStart="#3B82F6"
-              colorEnd="#10B981"
               tooltipLabelFormatter={(label) => {
                 const item = boxSingleDonutData.find((d) => d.name === label);
                 return item ? `${label}: ${formatNumber(item.value)} units` : label;
               }}
             />
 
-            <ChartWithTypeSelector
+            {/* Unit Type Mix (All Products) */}
+            <ChartWithControls
               title="Unit Type Mix (All Products)"
               data={unitTypePieData}
-              dataKey="value"
+              availableKeys={[{ key: 'value', label: 'Units', color: '#3B82F6' }]}
+              defaultVisibleKeys={['value']}
               defaultChartType="pie"
               storageKey="sales_chart_unit_mix"
-              colorStart="#3B82F6"
-              colorEnd="#10B981"
             />
 
-            <ChartWithTypeSelector
+            {/* Box vs Single (Top 10 Products) */}
+            <ChartWithControls
               title="Box vs Single (Top 10 Products)"
               data={stackedData}
-              dataKey="Boxes"
-              secondaryDataKey="Singles"
+              availableKeys={[
+                { key: 'Boxes', label: 'Boxes', color: '#3B82F6' },
+                { key: 'Singles', label: 'Singles', color: '#10B981' },
+              ]}
+              defaultVisibleKeys={['Boxes', 'Singles']}
               defaultChartType="stacked"
               storageKey="sales_chart_box_single"
-              colorStart="#3B82F6"
-              colorEnd="#10B981"
             />
 
-            <ChartWithTypeSelector
+            {/* Product Volume (Units Sold) */}
+            <ChartWithControls
               title="Product Volume (Units Sold)"
               data={heatmapVolumeData}
-              dataKey="value"
+              availableKeys={[{ key: 'value', label: 'Units Sold', color: '#8B5CF6' }]}
+              defaultVisibleKeys={['value']}
               defaultChartType="bar"
               storageKey="sales_chart_volume"
-              colorStart="#8B5CF6"
-              colorEnd="#3B82F6"
               tooltipLabelFormatter={(label) => {
                 const item = quadrantHeatmap.find((p) => p.productName === label);
                 return item
@@ -605,14 +734,14 @@ export default function SalesAnalyticsPage() {
               }}
             />
 
-            <ChartWithTypeSelector
+            {/* Product Margin % */}
+            <ChartWithControls
               title="Product Margin %"
               data={heatmapMarginData}
-              dataKey="value"
+              availableKeys={[{ key: 'value', label: 'Margin %', color: '#F59E0B' }]}
+              defaultVisibleKeys={['value']}
               defaultChartType="bar"
               storageKey="sales_chart_margin"
-              colorStart="#10B981"
-              colorEnd="#F59E0B"
               tooltipLabelFormatter={(label) => {
                 const item = quadrantHeatmap.find((p) => p.productName === label);
                 return item
@@ -630,14 +759,13 @@ export default function SalesAnalyticsPage() {
               <h3 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
                 <TrendingUp className="h-5 w-5 text-emerald-400" /> Top Selling Products
               </h3>
-              <ChartWithTypeSelector
+              <ChartWithControls
                 title="Top Selling"
                 data={topSellingData}
-                dataKey="value"
+                availableKeys={[{ key: 'value', label: 'Units Sold', color: '#3B82F6' }]}
+                defaultVisibleKeys={['value']}
                 defaultChartType="bar"
                 storageKey="sales_chart_top_selling"
-                colorStart="#3B82F6"
-                colorEnd="#10B981"
                 tooltipLabelFormatter={(label) => {
                   const item = topSelling.find((p) => p.productName === label);
                   return item ? `🏆 ${item.productName}\n${formatNumber(item.totalUnitsSold)} units sold` : label;
@@ -648,14 +776,13 @@ export default function SalesAnalyticsPage() {
               <h3 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
                 <Award className="h-5 w-5 text-amber-400" /> Top Profit Products
               </h3>
-              <ChartWithTypeSelector
+              <ChartWithControls
                 title="Top Profit"
                 data={topProfitData}
-                dataKey="value"
+                availableKeys={[{ key: 'value', label: 'Profit', color: '#F59E0B' }]}
+                defaultVisibleKeys={['value']}
                 defaultChartType="bar"
                 storageKey="sales_chart_top_profit"
-                colorStart="#F59E0B"
-                colorEnd="#EF4444"
                 tooltipLabelFormatter={(label) => {
                   const item = topProfit.find((p) => p.productName === label);
                   return item ? `💰 ${item.productName}\n${formatCurrency(item.totalProfit)} profit` : label;
@@ -668,38 +795,35 @@ export default function SalesAnalyticsPage() {
         {/* DAILY BREAKDOWN */}
         <TabsContent value="daily-breakdown" className="mt-6 w-full max-w-full">
           <div className="grid gap-8 lg:grid-cols-2 w-full max-w-full">
-            <ChartWithTypeSelector
+            <ChartWithControls
               title="Daily Profit"
               data={revenueProfitData}
-              dataKey="profit"
+              availableKeys={[{ key: 'profit', label: 'Profit', color: '#8B5CF6' }]}
+              defaultVisibleKeys={['profit']}
               defaultChartType="line"
               storageKey="sales_chart_daily_breakdown_profit"
-              colorStart="#8B5CF6"
-              colorEnd="#EC4899"
               xAxisTickFormatter={formatDateLabel}
               tooltipLabelFormatter={formatDateTooltip}
             />
 
-            <ChartWithTypeSelector
+            <ChartWithControls
               title="Daily Sales Frequency"
               data={salesFreqData}
-              dataKey="saleCount"
+              availableKeys={[{ key: 'saleCount', label: 'Sales Count', color: '#3B82F6' }]}
+              defaultVisibleKeys={['saleCount']}
               defaultChartType="line"
               storageKey="sales_chart_daily_breakdown_frequency"
-              colorStart="#3B82F6"
-              colorEnd="#8B5CF6"
               xAxisTickFormatter={formatDateLabel}
               tooltipLabelFormatter={formatDateTooltip}
             />
 
-            <ChartWithTypeSelector
+            <ChartWithControls
               title="Daily Quantity Sold"
               data={quantityData}
-              dataKey="totalUnits"
+              availableKeys={[{ key: 'totalUnits', label: 'Units Sold', color: '#8B5CF6' }]}
+              defaultVisibleKeys={['totalUnits']}
               defaultChartType="area"
               storageKey="sales_chart_daily_breakdown_quantity"
-              colorStart="#8B5CF6"
-              colorEnd="#EC4899"
               xAxisTickFormatter={formatDateLabel}
               tooltipLabelFormatter={formatDateTooltip}
             />
