@@ -19,7 +19,6 @@ import {
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { ReusableChart } from '@/components/charts/ReusableChart';
 import { RefreshCw, BarChart3, TrendingUp, Award, Calendar } from 'lucide-react';
 import {
   Tabs,
@@ -27,6 +26,21 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs';
+
+// ── Dynamically import chart (client‑only) ──
+import dynamic from 'next/dynamic';
+
+const ReusableChart = dynamic(
+  () => import('@/components/charts/ReusableChart').then((mod) => mod.ReusableChart),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex items-center justify-center h-[350px] text-gray-400">
+        Loading chart…
+      </div>
+    ),
+  }
+);
 
 // ── Safe number parsing ──
 function parseSafeNumber(value: any): number {
@@ -40,12 +54,13 @@ function parseSafeNumber(value: any): number {
   return 0;
 }
 
-// ── Date formatters ──
+// ── Date formatters (now include year) ──
 function formatDateLabel(dateStr: string | undefined | null): string {
   if (!dateStr) return 'Unknown';
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr;
-  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  // Show short month/day/year so we can see the year on the chart
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function formatDateTooltip(dateStr: string | undefined | null): string {
@@ -154,6 +169,9 @@ function ChartWithTypeSelector({
     );
   }
 
+  // Log the first few data points to verify dates
+  console.log(`[${title}] First 3 data points:`, data.slice(0, 3));
+
   return (
     <div className="backdrop-blur-xl bg-white/5 rounded-2xl border border-white/10 p-6 w-full max-w-full overflow-hidden">
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -190,6 +208,7 @@ function ChartWithTypeSelector({
 // ── Main Component ──
 export default function SalesAnalyticsPage() {
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Data states
   const [salesSummary, setSalesSummary] = useState<SalesSummaryItem[]>([]);
@@ -206,45 +225,48 @@ export default function SalesAnalyticsPage() {
   // ── Fetch all data ──
   const fetchAllData = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const summaryRes = await api.get('/analytics/sales/sales-summary');
-      setSalesSummary(summaryRes.data.data || []);
+      setSalesSummary(summaryRes.data?.data ?? []);
+      console.log('Sales summary (raw):', summaryRes.data?.data?.slice(0, 2));
 
       const unitRes = await api.get('/analytics/sales/unit-type-breakdown', {
         params: { groupBy: 'product' },
       });
-      setUnitTypeBreakdown(unitRes.data.data || []);
+      setUnitTypeBreakdown(unitRes.data?.data ?? []);
 
       const heatmapRes = await api.get('/analytics/sales/quadrant-heatmap');
-      setQuadrantHeatmap(heatmapRes.data.data || []);
+      setQuadrantHeatmap(heatmapRes.data?.data ?? []);
 
       const profitRes = await api.get('/analytics/sales/daily-profit');
-      setDailyProfit(profitRes.data.data || []);
+      setDailyProfit(profitRes.data?.data ?? []);
 
       const freqRes = await api.get('/analytics/sales/daily-sales-frequency');
-      setDailySalesFrequency(freqRes.data.data || []);
+      setDailySalesFrequency(freqRes.data?.data ?? []);
 
       const qtyRes = await api.get('/analytics/sales/daily-quantity-sold');
-      setDailyQuantitySold(qtyRes.data.data || []);
+      setDailyQuantitySold(qtyRes.data?.data ?? []);
 
       const costRes = await api.get('/analytics/sales/cost-vs-retail');
-      setCostVsRetail(costRes.data.data || []);
+      setCostVsRetail(costRes.data?.data ?? []);
 
       const topSellRes = await api.get('/analytics/sales/top-selling', {
         params: { limit: 10 },
       });
-      setTopSelling(topSellRes.data.data || []);
+      setTopSelling(topSellRes.data?.data ?? []);
 
       const topProfitRes = await api.get('/analytics/sales/top-profit', {
         params: { limit: 10 },
       });
-      setTopProfit(topProfitRes.data.data || []);
+      setTopProfit(topProfitRes.data?.data ?? []);
 
       const rpmRes = await api.get('/analytics/sales/revenue-profit-margin');
-      setRevenueProfitMargin(rpmRes.data.data || []);
-    } catch (error: any) {
-      console.error('Sales analytics fetch error:', error);
-      toast.error(error.message || 'Failed to load sales analytics');
+      setRevenueProfitMargin(rpmRes.data?.data ?? []);
+    } catch (err: any) {
+      console.error('Sales analytics fetch error:', err);
+      setError(err.message || 'Failed to load sales analytics');
+      toast.error(err.message || 'Failed to load sales analytics');
     } finally {
       setLoading(false);
     }
@@ -256,7 +278,11 @@ export default function SalesAnalyticsPage() {
 
   // ── Transform data for charts ──
   const transformDailyData = (data: any[], keys: string[]) => {
-    return data.map(item => ({
+    if (!data || data.length === 0) return [];
+    return data.map((item) => ({
+      // Keep the original date for reference
+      date: item.date,
+      // Create a display label that includes the year
       name: formatDateLabel(item.date),
       fullDate: formatDateFull(item.date),
       tooltipLabel: formatDateTooltip(item.date),
@@ -265,11 +291,11 @@ export default function SalesAnalyticsPage() {
   };
 
   // ── Compute KPIs with safe parsing ──
-  const totalRevenue = salesSummary.reduce((sum, d) => sum + parseSafeNumber(d.totalRevenue), 0);
-  const totalProfit = salesSummary.reduce((sum, d) => sum + parseSafeNumber(d.totalProfit), 0);
-  const totalSalesCount = salesSummary.reduce((sum, d) => sum + parseSafeNumber(d.salesCount), 0);
-  const avgMargin = salesSummary.length > 0
-    ? salesSummary.reduce((sum, d) => sum + parseSafeNumber(d.marginPercent), 0) / salesSummary.length
+  const totalRevenue = (salesSummary || []).reduce((sum, d) => sum + parseSafeNumber(d.totalRevenue), 0);
+  const totalProfit = (salesSummary || []).reduce((sum, d) => sum + parseSafeNumber(d.totalProfit), 0);
+  const totalSalesCount = (salesSummary || []).reduce((sum, d) => sum + parseSafeNumber(d.salesCount), 0);
+  const avgMargin = (salesSummary || []).length > 0
+    ? (salesSummary || []).reduce((sum, d) => sum + parseSafeNumber(d.marginPercent), 0) / (salesSummary || []).length
     : 0;
 
   // ── Prepare chart data ──
@@ -279,13 +305,13 @@ export default function SalesAnalyticsPage() {
   const costVsRetailData = transformDailyData(costVsRetail, ['avgBuyPrice', 'avgSellCost']);
 
   // Unit Type Mix
-  const unitTypePieData = unitTypeBreakdown.map(item => ({
+  const unitTypePieData = (unitTypeBreakdown || []).map((item) => ({
     name: item.name,
     value: parseSafeNumber(item.total),
     color: '#3B82F6',
   }));
 
-  const stackedData = unitTypeBreakdown.slice(0, 10).map(item => ({
+  const stackedData = (unitTypeBreakdown || []).slice(0, 10).map((item) => ({
     name: item.name.length > 12 ? item.name.slice(0, 12) + '…' : item.name,
     fullName: item.name,
     Boxes: parseSafeNumber(item.boxes),
@@ -293,22 +319,22 @@ export default function SalesAnalyticsPage() {
   }));
 
   // Box vs Single Donut
-  const totalBoxes = unitTypeBreakdown.reduce((sum, item) => sum + parseSafeNumber(item.boxes), 0);
-  const totalSingles = unitTypeBreakdown.reduce((sum, item) => sum + parseSafeNumber(item.singles), 0);
+  const totalBoxes = (unitTypeBreakdown || []).reduce((sum, item) => sum + parseSafeNumber(item.boxes), 0);
+  const totalSingles = (unitTypeBreakdown || []).reduce((sum, item) => sum + parseSafeNumber(item.singles), 0);
   const boxSingleDonutData = [
     { name: 'Boxes', value: totalBoxes, color: '#3B82F6' },
     { name: 'Singles', value: totalSingles, color: '#10B981' },
   ];
 
   // Quadrant Heatmap
-  const heatmapVolumeData = quadrantHeatmap.map(item => ({
+  const heatmapVolumeData = (quadrantHeatmap || []).map((item) => ({
     name: item.productName.length > 15 ? item.productName.slice(0, 15) + '…' : item.productName,
     fullName: item.productName,
     value: parseSafeNumber(item.totalUnitsSold),
     color: item.marginPercent > 30 ? '#10B981' : item.marginPercent > 10 ? '#F59E0B' : '#EF4444',
   }));
 
-  const heatmapMarginData = quadrantHeatmap.map(item => ({
+  const heatmapMarginData = (quadrantHeatmap || []).map((item) => ({
     name: item.productName.length > 15 ? item.productName.slice(0, 15) + '…' : item.productName,
     fullName: item.productName,
     value: parseSafeNumber(item.marginPercent),
@@ -316,13 +342,13 @@ export default function SalesAnalyticsPage() {
   }));
 
   // Top Products
-  const topSellingData = topSelling.map(item => ({
+  const topSellingData = (topSelling || []).map((item) => ({
     name: item.productName.length > 15 ? item.productName.slice(0, 15) + '…' : item.productName,
     fullName: item.productName,
     value: parseSafeNumber(item.totalUnitsSold),
   }));
 
-  const topProfitData = topProfit.map(item => ({
+  const topProfitData = (topProfit || []).map((item) => ({
     name: item.productName.length > 15 ? item.productName.slice(0, 15) + '…' : item.productName,
     fullName: item.productName,
     value: parseSafeNumber(item.totalProfit),
@@ -335,11 +361,32 @@ export default function SalesAnalyticsPage() {
         <div className="space-y-8">
           <Skeleton className="h-12 w-64 bg-white/10" />
           <div className="grid gap-6 md:grid-cols-4">
-            {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-32 rounded-xl bg-white/10" />)}
+            {[1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-32 rounded-xl bg-white/10" />
+            ))}
           </div>
           <div className="grid gap-8 lg:grid-cols-2">
-            {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-[400px] rounded-2xl bg-white/10" />)}
+            {[1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} className="h-[400px] rounded-2xl bg-white/10" />
+            ))}
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="container mx-auto px-4 py-8 max-w-7xl">
+        <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-6 text-red-400">
+          <h2 className="text-xl font-bold mb-2">Error loading analytics</h2>
+          <p>{error}</p>
+          <Button
+            onClick={fetchAllData}
+            className="mt-4 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500"
+          >
+            Retry
+          </Button>
         </div>
       </div>
     );
@@ -422,13 +469,22 @@ export default function SalesAnalyticsPage() {
       {/* Tabs */}
       <Tabs defaultValue="overview" className="mb-8 w-full max-w-full">
         <TabsList className="bg-slate-800/50 backdrop-blur-md border border-slate-700 p-1 rounded-xl w-full max-w-full overflow-x-auto flex-nowrap">
-          <TabsTrigger value="overview" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-emerald-500 data-[state=active]:to-teal-500 data-[state=active]:text-white rounded-lg text-slate-300 flex-shrink-0">
+          <TabsTrigger
+            value="overview"
+            className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-emerald-500 data-[state=active]:to-teal-500 data-[state=active]:text-white rounded-lg text-slate-300 flex-shrink-0"
+          >
             <BarChart3 className="mr-2 h-4 w-4" /> Overview
           </TabsTrigger>
-          <TabsTrigger value="top-products" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-500 data-[state=active]:to-purple-500 data-[state=active]:text-white rounded-lg text-slate-300 flex-shrink-0">
+          <TabsTrigger
+            value="top-products"
+            className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-500 data-[state=active]:to-purple-500 data-[state=active]:text-white rounded-lg text-slate-300 flex-shrink-0"
+          >
             <TrendingUp className="mr-2 h-4 w-4" /> Top Products
           </TabsTrigger>
-          <TabsTrigger value="daily-breakdown" className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-amber-500 data-[state=active]:to-orange-500 data-[state=active]:text-white rounded-lg text-slate-300 flex-shrink-0">
+          <TabsTrigger
+            value="daily-breakdown"
+            className="data-[state=active]:bg-gradient-to-r data-[state=active]:from-amber-500 data-[state=active]:to-orange-500 data-[state=active]:text-white rounded-lg text-slate-300 flex-shrink-0"
+          >
             <Calendar className="mr-2 h-4 w-4" /> Daily Breakdown
           </TabsTrigger>
         </TabsList>
@@ -507,7 +563,7 @@ export default function SalesAnalyticsPage() {
               colorStart="#3B82F6"
               colorEnd="#10B981"
               tooltipLabelFormatter={(label) => {
-                const item = boxSingleDonutData.find(d => d.name === label);
+                const item = boxSingleDonutData.find((d) => d.name === label);
                 return item ? `${label}: ${formatNumber(item.value)} units` : label;
               }}
             />
@@ -542,8 +598,10 @@ export default function SalesAnalyticsPage() {
               colorStart="#8B5CF6"
               colorEnd="#3B82F6"
               tooltipLabelFormatter={(label) => {
-                const item = quadrantHeatmap.find(p => p.productName === label);
-                return item ? `📦 ${item.productName}\n${formatNumber(item.totalUnitsSold)} units\nMargin: ${item.marginPercent?.toFixed(1)}%` : label;
+                const item = quadrantHeatmap.find((p) => p.productName === label);
+                return item
+                  ? `📦 ${item.productName}\n${formatNumber(item.totalUnitsSold)} units\nMargin: ${item.marginPercent?.toFixed(1)}%`
+                  : label;
               }}
             />
 
@@ -556,8 +614,10 @@ export default function SalesAnalyticsPage() {
               colorStart="#10B981"
               colorEnd="#F59E0B"
               tooltipLabelFormatter={(label) => {
-                const item = quadrantHeatmap.find(p => p.productName === label);
-                return item ? `📈 ${item.productName}\nMargin: ${item.marginPercent?.toFixed(1)}%\n${item.hasLossLeader ? '⚠️ Loss Leader' : '✅ Profitable'}` : label;
+                const item = quadrantHeatmap.find((p) => p.productName === label);
+                return item
+                  ? `📈 ${item.productName}\nMargin: ${item.marginPercent?.toFixed(1)}%\n${item.hasLossLeader ? '⚠️ Loss Leader' : '✅ Profitable'}`
+                  : label;
               }}
             />
           </div>
@@ -579,7 +639,7 @@ export default function SalesAnalyticsPage() {
                 colorStart="#3B82F6"
                 colorEnd="#10B981"
                 tooltipLabelFormatter={(label) => {
-                  const item = topSelling.find(p => p.productName === label);
+                  const item = topSelling.find((p) => p.productName === label);
                   return item ? `🏆 ${item.productName}\n${formatNumber(item.totalUnitsSold)} units sold` : label;
                 }}
               />
@@ -597,7 +657,7 @@ export default function SalesAnalyticsPage() {
                 colorStart="#F59E0B"
                 colorEnd="#EF4444"
                 tooltipLabelFormatter={(label) => {
-                  const item = topProfit.find(p => p.productName === label);
+                  const item = topProfit.find((p) => p.productName === label);
                   return item ? `💰 ${item.productName}\n${formatCurrency(item.totalProfit)} profit` : label;
                 }}
               />
