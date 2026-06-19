@@ -69,6 +69,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
+// ─── Log the API base URL to help debug ───
+console.log("🧪 API base URL:", (api as any).defaults?.baseURL || "Not set");
+
 // ==================== TYPES ====================
 type ExpenseReferenceType = "stock" | "personal" | "recurring" | "general" | "plan";
 interface Expense {
@@ -209,6 +212,15 @@ export default function ExpensesPage() {
 
   const getIdempotencyKey = () => crypto.randomUUID();
 
+  // ─── Enhanced error logging ───
+  const handleApiError = (err: any, operation: string) => {
+    console.error(`❌ ${operation} error:`, err);
+    const message = err.response?.data?.message || err.message || "Unknown error";
+    const status = err.response?.status || "no status";
+    console.error(`   Status: ${status}, URL: ${err.config?.url}`);
+    toast.error(`${operation} failed: ${message}`, { position: "bottom-left" });
+  };
+
   // Optimistic delete with undo
   const optimisticDelete = (
     type: "expense" | "category" | "plan" | "recurring",
@@ -262,13 +274,12 @@ export default function ExpensesPage() {
         clearTimeout(timeout);
         toast.dismiss(toastId);
         actualDeleteFn().catch((err) => {
-          const errorMsg = err.response?.data?.message || "Delete failed";
-          toast.error(errorMsg, { position: "bottom-left" });
+          handleApiError(err, "Delete");
           if (type === "expense") setExpenses(prev => [...prev, optimisticData]);
           else if (type === "category") setExpenseCategories(prev => [...prev, optimisticData]);
           else if (type === "plan") setExpensePlans(prev => [...prev, optimisticData]);
           else if (type === "recurring") setRecurringExpenses(prev => [...prev, optimisticData]);
-          if (type === "category" && errorMsg.includes('force=true')) {
+          if (type === "category" && err.response?.data?.message.includes('force=true')) {
             setForceDeleteDialog({ open: true, id, title, categories: expenseCategories });
           }
         });
@@ -282,7 +293,7 @@ export default function ExpensesPage() {
         clearInterval(interval);
         toast.dismiss(toastId);
         actualDeleteFn().catch((err) => {
-          toast.error(err.response?.data?.message || "Delete failed", { position: "bottom-left" });
+          handleApiError(err, "Delete");
           if (type === "expense") setExpenses(prev => [...prev, optimisticData]);
           else if (type === "category") setExpenseCategories(prev => [...prev, optimisticData]);
           else if (type === "plan") setExpensePlans(prev => [...prev, optimisticData]);
@@ -315,7 +326,7 @@ export default function ExpensesPage() {
       setForceDeleteDialog(null);
       setForceReassignTo("none");
     } catch (err: any) {
-      toast.error(err.response?.data?.message || "Force delete failed", { position: "bottom-left" });
+      handleApiError(err, "Force delete");
     } finally {
       setForceLoading(false);
     }
@@ -336,8 +347,7 @@ export default function ExpensesPage() {
       setExpenses(res.data.data || []);
       setExpensePagination(prev => ({ ...prev, total: res.data.pagination?.total || 0 }));
     } catch (error) {
-      console.error("Fetch expenses error:", error);
-      toast.error("Failed to load expenses", { position: "bottom-left" });
+      handleApiError(error, "Fetch expenses");
     }
   };
 
@@ -346,8 +356,7 @@ export default function ExpensesPage() {
       const res = await api.get("/expense-categories?flatList=true");
       setExpenseCategories(res.data.data || []);
     } catch (error) {
-      console.error("Fetch categories error:", error);
-      toast.error("Failed to load categories", { position: "bottom-left" });
+      handleApiError(error, "Fetch categories");
     }
   };
 
@@ -356,8 +365,7 @@ export default function ExpensesPage() {
       const res = await api.get("/expense-plans?limit=100");
       setExpensePlans(res.data.data || []);
     } catch (error) {
-      console.error("Fetch plans error:", error);
-      toast.error("Failed to load plans", { position: "bottom-left" });
+      handleApiError(error, "Fetch plans");
     }
   };
 
@@ -366,8 +374,7 @@ export default function ExpensesPage() {
       const res = await api.get("/recurring-expenses?limit=100");
       setRecurringExpenses(res.data.data || []);
     } catch (error) {
-      console.error("Fetch recurring error:", error);
-      toast.error("Failed to load recurring expenses", { position: "bottom-left" });
+      handleApiError(error, "Fetch recurring");
     }
   };
 
@@ -410,8 +417,7 @@ export default function ExpensesPage() {
       setQuickCategoryName("");
       setShowQuickCategoryDialog(false);
     } catch (err: any) {
-      console.error("Quick create category error:", err);
-      toast.error(err.response?.data?.message || "Creation failed", { position: "bottom-left" });
+      handleApiError(err, "Quick create category");
     } finally {
       setIsQuickCreatingCategory(false);
     }
@@ -432,8 +438,7 @@ export default function ExpensesPage() {
       setQuickPlanTarget("");
       setShowQuickPlanDialog(false);
     } catch (err: any) {
-      console.error("Quick create plan error:", err);
-      toast.error(err.response?.data?.message || "Creation failed", { position: "bottom-left" });
+      handleApiError(err, "Quick create plan");
     } finally {
       setIsQuickCreatingPlan(false);
     }
@@ -441,7 +446,6 @@ export default function ExpensesPage() {
 
   // ---------- CRUD Handlers ----------
   const handleCreateExpense = async () => {
-    // Validation
     if (!expenseForm.title.trim()) {
       toast.error("Title is required", { position: "bottom-left" });
       return;
@@ -466,16 +470,14 @@ export default function ExpensesPage() {
         referenceType: expenseForm.referenceType,
         notes: expenseForm.notes || undefined,
       };
-      console.log("Creating expense with payload:", payload);
+      console.log("📤 Creating expense with payload:", payload);
       await api.post("/expenses", payload, { headers: { "Idempotency-Key": idempotencyKey } });
       toast.success("Expense created", { position: "bottom-left" });
       setExpenseDialogOpen(false);
       resetExpenseForm();
       await fetchExpenses();
     } catch (err: any) {
-      console.error("Create expense error:", err);
-      const errorMsg = err.response?.data?.message || "Failed to create expense";
-      toast.error(errorMsg, { position: "bottom-left" });
+      handleApiError(err, "Create expense");
     } finally {
       setIsCreatingExpense(false);
     }
@@ -485,21 +487,22 @@ export default function ExpensesPage() {
     if (!editingItem) return;
     setIsUpdatingExpense(true);
     try {
-      await api.put(`/expenses/${editingItem.id}`, {
+      const payload = {
         title: expenseForm.title,
         amount: parseFloat(expenseForm.amount),
         expenseDate: expenseForm.expenseDate,
         categoryId: expenseForm.categoryId,
         referenceType: expenseForm.referenceType,
         notes: expenseForm.notes,
-      });
+      };
+      console.log(`📤 Updating expense ${editingItem.id} with:`, payload);
+      await api.put(`/expenses/${editingItem.id}`, payload);
       toast.success("Expense updated", { position: "bottom-left" });
       setExpenseDialogOpen(false);
       resetExpenseForm();
       await fetchExpenses();
     } catch (err: any) {
-      console.error("Update expense error:", err);
-      toast.error(err.response?.data?.message || "Update failed", { position: "bottom-left" });
+      handleApiError(err, "Update expense");
     } finally {
       setIsUpdatingExpense(false);
     }
@@ -520,8 +523,7 @@ export default function ExpensesPage() {
       setCategoryForm({ name: "", description: "" });
       await fetchCategories();
     } catch (err: any) {
-      console.error("Create category error:", err);
-      toast.error(err.response?.data?.message, { position: "bottom-left" });
+      handleApiError(err, "Create category");
     } finally {
       setIsCreatingCategory(false);
     }
@@ -542,8 +544,7 @@ export default function ExpensesPage() {
       setPlanForm({ title: "", targetAmount: "", targetDate: "", status: "planned", notes: "" });
       await fetchPlans();
     } catch (err: any) {
-      console.error("Create plan error:", err);
-      toast.error(err.response?.data?.message, { position: "bottom-left" });
+      handleApiError(err, "Create plan");
     } finally {
       setIsCreatingPlan(false);
     }
@@ -555,8 +556,7 @@ export default function ExpensesPage() {
       toast.success("Allocation refreshed", { position: "bottom-left" });
       await fetchPlans();
     } catch (err: any) {
-      console.error("Refresh plan error:", err);
-      toast.error(err.response?.data?.message, { position: "bottom-left" });
+      handleApiError(err, "Refresh allocation");
     }
   };
 
@@ -585,8 +585,7 @@ export default function ExpensesPage() {
       });
       await fetchRecurring();
     } catch (err: any) {
-      console.error("Create recurring error:", err);
-      toast.error(err.response?.data?.message, { position: "bottom-left" });
+      handleApiError(err, "Create recurring");
     } finally {
       setIsCreatingRecurring(false);
     }
@@ -598,8 +597,7 @@ export default function ExpensesPage() {
       setPreviewDates(res.data.data.map((d: string) => new Date(d)));
       setPreviewDatesOpen(true);
     } catch (err) {
-      console.error("Preview recurring error:", err);
-      toast.error("Failed to preview", { position: "bottom-left" });
+      handleApiError(err, "Preview recurring");
     }
   };
 
@@ -611,8 +609,7 @@ export default function ExpensesPage() {
       await fetchExpenses();
       await fetchRecurring();
     } catch (err) {
-      console.error("Generate error:", err);
-      toast.error("Generation failed", { position: "bottom-left" });
+      handleApiError(err, "Generate recurring");
     } finally {
       setGenerating(false);
     }
@@ -857,7 +854,7 @@ export default function ExpensesPage() {
         </div>
       </div>
 
-      {/* Dialogs */}
+      {/* ─── DIALOGS ─── */}
       <Dialog open={expenseDialogOpen} onOpenChange={setExpenseDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>{editingItem ? "Edit Expense" : "New Expense"}</DialogTitle></DialogHeader>
