@@ -456,10 +456,9 @@ export default function ExpensesPage() {
   };
 
   // ══════════════════════════════════════════════════════════════
-  //  FIXED: CREATE EXPENSE WITH SAFETY TIMER
+  //  CREATE EXPENSE WITH SAFETY TIMER
   // ══════════════════════════════════════════════════════════════
   const handleCreateExpense = async () => {
-    // ── Validation ──
     if (!expenseForm.title.trim()) {
       toast.error("Title is required", { position: "bottom-left" });
       return;
@@ -473,10 +472,9 @@ export default function ExpensesPage() {
       return;
     }
 
-    // ── Set loading state ──
     setIsCreatingExpense(true);
 
-    // ── SAFETY NET: force reset after 60 seconds (in case promise never resolves) ──
+    // SAFETY NET: force reset after 60 seconds
     let safetyTimer: NodeJS.Timeout | null = setTimeout(() => {
       setIsCreatingExpense(false);
       toast.error("Request timed out after 60 seconds", { position: "bottom-left" });
@@ -501,14 +499,14 @@ export default function ExpensesPage() {
         timeout: 30000, // 30 seconds
       });
 
-      clearTimeout(safetyTimer); // success, cancel safety
+      clearTimeout(safetyTimer);
       console.log("✅ Expense created:", res.data);
       toast.success("Expense created", { position: "bottom-left" });
       setExpenseDialogOpen(false);
       resetExpenseForm();
       await fetchExpenses();
     } catch (err: any) {
-      clearTimeout(safetyTimer); // error, cancel safety
+      clearTimeout(safetyTimer);
       console.error("❌ Create expense error (full):", err);
       if (err.code === "ECONNABORTED" || err.message.includes("timeout")) {
         toast.error("Request timed out – server took too long to respond", { position: "bottom-left" });
@@ -516,8 +514,7 @@ export default function ExpensesPage() {
         handleApiError(err, "Create expense");
       }
     } finally {
-      // ── ALWAYS reset loading state ──
-      if (safetyTimer) clearTimeout(safetyTimer); // extra safety
+      if (safetyTimer) clearTimeout(safetyTimer);
       setIsCreatingExpense(false);
       console.log("🔄 Loading state reset to false");
     }
